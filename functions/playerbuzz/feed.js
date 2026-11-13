@@ -62,7 +62,210 @@ export async function onRequest(context) {
     return match ? cleanText(match[1]) : "";
   }
 
-  // 解析AI返回的JSON，并兼容部分格式错误
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  // 常见NBA球员英文姓名保护名单
+  const playerNames = [
+    "LeBron James",
+    "Stephen Curry",
+    "Kevin Durant",
+    "Nikola Jokic",
+    "Luka Doncic",
+    "Giannis Antetokounmpo",
+    "Victor Wembanyama",
+    "Joel Embiid",
+    "Jayson Tatum",
+    "Jaylen Brown",
+    "Anthony Edwards",
+    "Shai Gilgeous-Alexander",
+    "Jalen Brunson",
+    "Donovan Mitchell",
+    "Devin Booker",
+    "Cade Cunningham",
+    "Tyrese Haliburton",
+    "Anthony Davis",
+    "James Harden",
+    "Kyrie Irving",
+    "Kawhi Leonard",
+    "Paul George",
+    "Damian Lillard",
+    "Trae Young",
+    "Ja Morant",
+    "Zion Williamson",
+    "Austin Reaves",
+    "Marcus Smart",
+    "Charles Bassey",
+    "Malcolm Brogdon",
+    "Coby White",
+    "VJ Edgecombe",
+    "Jamison Battle",
+    "Collin Murray-Boyles",
+    "Caleb Wilson",
+    "AJ Dybantsa",
+    "Yaxel Lendeborg",
+    "Kristaps Porzingis",
+    "Mikal Bridges",
+    "Tyler Herro",
+    "Bam Adebayo",
+    "Evan Mobley",
+    "Darius Garland",
+    "Donte DiVincenzo",
+    "Karl-Anthony Towns",
+    "Julius Randle",
+    "Jaren Jackson Jr.",
+    "Desmond Bane",
+    "Lauri Markkanen",
+    "De'Aaron Fox",
+    "Domantas Sabonis",
+    "Draymond Green",
+    "Jimmy Butler",
+    "Klay Thompson",
+    "Khris Middleton",
+    "Brook Lopez",
+    "Chet Holmgren",
+    "Jalen Williams",
+    "Alperen Sengun",
+    "Fred VanVleet",
+    "Amen Thompson",
+    "Ausar Thompson",
+    "Paolo Banchero",
+    "Franz Wagner",
+    "LaMelo Ball",
+    "Brandon Miller",
+    "Scottie Barnes",
+    "RJ Barrett",
+    "Immanuel Quickley",
+    "Tyrese Maxey",
+    "Paul Reed",
+    "Derrick White",
+    "Jrue Holiday",
+    "Kristaps Porzingis",
+    "Deandre Ayton",
+    "DeMar DeRozan",
+    "Zach LaVine",
+    "Nikola Vucevic",
+    "Josh Giddey",
+    "Michael Porter Jr.",
+    "Aaron Gordon",
+    "Jamal Murray",
+    "Russell Westbrook",
+    "Bradley Beal",
+    "Devin Vassell",
+    "Stephon Castle",
+    "Chris Paul",
+    "Harrison Barnes",
+    "LaMelo Ball",
+    "Terry Rozier",
+    "Tyler Herro",
+    "Duncan Robinson",
+    "Jalen Green",
+    "Dillon Brooks",
+    "Tari Eason",
+    "Reed Sheppard",
+    "Cooper Flagg",
+    "Kon Knueppel",
+    "Dylan Harper",
+    "Ace Bailey",
+    "Derik Queen",
+    "Nolan Traore"
+  ];
+
+  // 保护原文中出现的球员姓名和对应姓氏
+  function protectPlayerNames(title, content) {
+    const combined = title + " " + content;
+    const found = [];
+
+    for (const fullName of playerNames) {
+      const pattern = new RegExp(
+        "\\b" + escapeRegExp(fullName) + "\\b",
+        "i"
+      );
+
+      if (pattern.test(combined)) {
+        found.push({
+          original: fullName,
+          alias: fullName.split(/\s+/).pop()
+        });
+      }
+    }
+
+    // 姓氏也需要保护，例如原文标题只写 Smart
+    const protectedEntries = [];
+
+    for (const player of found) {
+      protectedEntries.push(player.original);
+
+      const surname = player.alias;
+
+      if (
+        surname.length > 2 &&
+        new RegExp(
+          "\\b" + escapeRegExp(surname) + "\\b",
+          "i"
+        ).test(combined)
+      ) {
+        protectedEntries.push(surname);
+      }
+    }
+
+    const uniqueNames = [...new Set(protectedEntries)]
+      .sort((a, b) => b.length - a.length);
+
+    const replacements = [];
+    let index = 0;
+
+    function maskText(text) {
+      let result = text;
+
+      for (const name of uniqueNames) {
+        const pattern = new RegExp(
+          "\\b" + escapeRegExp(name) + "\\b",
+          "gi"
+        );
+
+        result = result.replace(pattern, matched => {
+          const existing = replacements.find(
+            item => item.original.toLowerCase() === matched.toLowerCase()
+          );
+
+          if (existing) {
+            return existing.token;
+          }
+
+          const token = "BBALLPLAYER" + index + "TOKEN";
+          index++;
+
+          replacements.push({
+            token,
+            original: matched
+          });
+
+          return token;
+        });
+      }
+
+      return result;
+    }
+
+    return {
+      title: maskText(title),
+      content: maskText(content),
+      replacements
+    };
+  }
+
+  function restorePlayerNames(text, replacements) {
+    let result = String(text);
+
+    for (const item of replacements) {
+      result = result.split(item.token).join(item.original);
+    }
+
+    return result;
+  }
+
   function parseTranslation(rawText) {
     const cleaned = rawText
       .replace(/^```(?:json)?\s*/i, "")
@@ -72,7 +275,6 @@ export async function onRequest(context) {
     try {
       return JSON.parse(cleaned);
     } catch (error) {
-      // 尝试修复 summary 字段缺少引号的情况
       const titleMatch = cleaned.match(
         /"title"\s*:\s*"((?:\\.|[^"\\])*)"/
       );
@@ -143,94 +345,153 @@ export async function onRequest(context) {
     }).filter(item => item.title);
   }
 
-  // AI翻译：球员姓名必须保留英文
   async function translateNews(item) {
     if (!context.env.AI) {
       throw new Error("没有找到 AI 绑定");
     }
 
-    const sourceText = JSON.stringify({
-      title: item.title.slice(0, 300),
-      description: item.content.slice(0, 700)
-    });
-
-    const result = await context.env.AI.run(
-      "@cf/zai-org/glm-4.7-flash",
-      {
-        messages: [
-          {
-            role: "system",
-            content: `你是一名专业的NBA中文新闻编辑。
-
-请把英文NBA新闻标题和摘要翻译成自然、准确的简体中文。
-
-必须严格遵守以下规则：
-
-1. 所有NBA球员姓名必须保留英文原名。
-2. 禁止将球员姓名翻译成中文、音译成中文或改写成其他英文姓名。
-3. 例如 Devin Booker 必须写作 Devin Booker，Marcus Smart 必须写作 Marcus Smart，Stephen Curry 必须写作 Stephen Curry，LeBron James 必须写作 LeBron James。
-4. 如果原文只出现球员姓氏，可以保留原文中的姓氏，不要自行猜测或替换成其他球员。
-5. 绝对不能把一个球员误写成另一个球员。例如 Marcus Smart 不能变成 Malcolm Brogdon。
-6. 球队名称翻译成常见中文名称。
-7. 新闻标题必须是中文，但其中球员姓名保持英文。
-8. 新闻摘要必须是中文，但其中球员姓名保持英文。
-9. 比分、数据、时间、伤病和比赛事实必须准确。
-10. 只能根据原文翻译，不得编造事实。
-11. 如果没有摘要，可以根据标题写一句简短中文说明，不得编造事实。
-12. 不要输出分析过程、解释或Markdown代码块。
-13. 必须返回合法JSON，title和summary的值必须使用英文双引号包围，不能遗漏引号。
-
-返回格式：
-{"title":"Devin Booker砍下30分，率队取得胜利","summary":"Devin Booker全场贡献30分，帮助球队战胜对手。"}`
-          },
-          {
-            role: "user",
-            content: sourceText
-          }
-        ],
-        chat_template_kwargs: {
-          enable_thinking: false,
-          clear_thinking: true
-        },
-        max_completion_tokens: 300,
-        temperature: 0.1
-      }
+    const protectedText = protectPlayerNames(
+      item.title.slice(0, 300),
+      item.content.slice(0, 700)
     );
 
-    const message = result?.choices?.[0]?.message;
+    const sourceText = JSON.stringify({
+      title: protectedText.title,
+      description: protectedText.content
+    });
 
-    const rawText =
-      message?.content ||
-      result?.response ||
-      result?.output_text ||
-      "";
+    const systemPrompt = `你是一名专业的NBA中文新闻编辑。
 
-    if (typeof rawText !== "string" || !rawText.trim()) {
-      throw new Error("AI没有返回翻译内容");
+将用户提供的英文NBA新闻标题和摘要翻译成准确、自然的简体中文。
+
+必须遵守：
+
+1. 所有 BBALLPLAYER数字TOKEN 格式的占位符必须原样保留，不能翻译、删除、修改或拆开。
+2. 这些占位符代表NBA球员英文姓名，最终会由系统自动还原。
+3. 不要自行猜测球员姓名，不要把一个球员写成另一个球员。
+4. 球队名称翻译成常见中文名称。
+5. 标题和摘要都必须翻译成中文。
+6. 保留原文中的比分、球员数据、日期和比赛事实。
+7. 伤病部位必须准确区分，例如 oblique 是腹斜肌，不是腹股沟。
+8. 不得将 injury、strain、tear 等不同伤病描述随意混用。
+9. 不得编造原文没有的信息。
+10. 不要输出解释、分析或Markdown。
+11. 必须输出合法JSON，字符串必须使用英文双引号。
+
+只允许返回以下结构：
+{"title":"中文标题","summary":"中文摘要"}`;
+
+    async function requestTranslation(extraInstruction = "") {
+      const result = await context.env.AI.run(
+        "@cf/zai-org/glm-4.7-flash",
+        {
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt + extraInstruction
+            },
+            {
+              role: "user",
+              content: sourceText
+            }
+          ],
+          chat_template_kwargs: {
+            enable_thinking: false,
+            clear_thinking: true
+          },
+          max_completion_tokens: 400,
+          temperature: 0.1
+        }
+      );
+
+      const message = result?.choices?.[0]?.message;
+
+      const rawText =
+        message?.content ||
+        result?.response ||
+        result?.output_text ||
+        "";
+
+      if (typeof rawText !== "string" || !rawText.trim()) {
+        throw new Error("AI没有返回翻译内容");
+      }
+
+      return parseTranslation(rawText);
     }
 
-    const translated = parseTranslation(rawText);
+    let lastError = null;
 
-    if (
-      typeof translated.title !== "string" ||
-      !translated.title.trim() ||
-      typeof translated.summary !== "string" ||
-      !translated.summary.trim()
-    ) {
-      throw new Error("AI返回的标题或摘要格式不正确");
+    // 最多尝试两次
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const translated = await requestTranslation(
+          attempt === 2
+            ? "\n再次提醒：必须保留所有占位符，必须返回语法正确的JSON。检查标题和摘要中的事实与伤病信息。"
+            : ""
+        );
+
+        if (
+          typeof translated.title !== "string" ||
+          !translated.title.trim() ||
+          typeof translated.summary !== "string" ||
+          !translated.summary.trim()
+        ) {
+          throw new Error("AI返回的标题或摘要格式不正确");
+        }
+
+        // 检查所有占位符是否完整保留
+        for (const item of protectedText.replacements) {
+          const titleHasToken = translated.title.includes(item.token);
+          const summaryHasToken = translated.summary.includes(item.token);
+
+          const originalTitleHasName = new RegExp(
+            "\\b" + escapeRegExp(item.original) + "\\b",
+            "i"
+          ).test(item.original);
+
+          if (
+            !titleHasToken &&
+            !summaryHasToken &&
+            originalTitleHasName
+          ) {
+            // 如果AI删除占位符，要求重新翻译
+            throw new Error("AI遗漏了球员姓名占位符");
+          }
+        }
+
+        const finalTitle = restorePlayerNames(
+          translated.title,
+          protectedText.replacements
+        );
+
+        const finalSummary = restorePlayerNames(
+          translated.summary,
+          protectedText.replacements
+        );
+
+        if (!hasChinese(finalTitle) || !hasChinese(finalSummary)) {
+          throw new Error("AI返回内容没有包含中文");
+        }
+
+        // 检查还原后的内容是否仍包含未还原的占位符
+        if (
+          /BBALLPLAYER\d+TOKEN/.test(finalTitle) ||
+          /BBALLPLAYER\d+TOKEN/.test(finalSummary)
+        ) {
+          throw new Error("球员姓名还原失败");
+        }
+
+        return {
+          title: finalTitle.trim(),
+          summary: finalSummary.trim()
+        };
+
+      } catch (error) {
+        lastError = error;
+      }
     }
 
-    if (
-      !hasChinese(translated.title) ||
-      !hasChinese(translated.summary)
-    ) {
-      throw new Error("AI返回内容没有包含中文");
-    }
-
-    return {
-      title: translated.title.trim(),
-      summary: translated.summary.trim()
-    };
+    throw lastError || new Error("AI翻译失败");
   }
 
   const feeds = [
