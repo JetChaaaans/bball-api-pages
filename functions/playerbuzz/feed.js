@@ -124,7 +124,9 @@ export async function onRequest(context) {
     }
   }
 
-  // 只允许明确的场外新闻进入精选
+  // 只提前排除明确属于比赛、伤病、球队运作等内容。
+  // 不再要求新闻必须命中场外关键词，避免漏掉不同英文表达的真实场外新闻。
+  // 最终是否属于球员场外动态，交由 AI 结合标题和内容进行语义判断。
   function isPotentialOffCourtNews(item) {
     const text = (
       String(item.title || "") + " " +
@@ -132,35 +134,16 @@ export async function onRequest(context) {
     ).toLowerCase();
 
     const excludedPatterns = [
-      /\b(box score|game recap|game preview|matchup|postgame|pre-game)\b/i,
-      /\b(points|rebounds|assists|steals|blocks|field goal|three-pointers)\b/i,
-      /\b(shot|shooting|scored|scores|scoring|win over|beat the|defeated)\b/i,
+      /\b(box score|game recap|game preview|matchup|postgame|pre-game|game highlights?)\b/i,
+      /\b(points|rebounds|assists|steals|blocks|field goal|three-pointers|triple-double)\b/i,
+      /\b(shot|shooting|scored|scores|scoring|win over|beat the|defeated|game-winning)\b/i,
       /\b(injury|injured|sidelined|out for|misses? .*games?|surgery|fracture|sprain|strain|torn|tear|rehab|return from injury)\b/i,
       /\b(trade rumors?|trade deadline|contract extension|free agency|waived|signed with|roster move)\b/i,
       /\b(power rankings?|rankings?|standings|playoff picture|fantasy basketball|betting odds)\b/i,
-      /\b(practice|training camp|starting lineup|rotation|coach says|team announces)\b/i
+      /\b(practice|training camp|starting lineup|rotation|coach says|team announces|preseason workout)\b/i
     ];
 
-    if (excludedPatterns.some(pattern => pattern.test(text))) {
-      return false;
-    }
-
-    const offCourtPatterns = [
-      /\b(instagram|tiktok|twitter|x.com|social media|youtube|podcast)\b/i,
-      /\b(posted|posting|viral|went viral|online reaction|responded|reply|replied)\b/i,
-      /\b(wife|husband|girlfriend|boyfriend|partner|family|son|daughter|children|kids|mother|father)\b/i,
-      /\b(wedding|marriage|dating|relationship|birthday|vacation|holiday|home life)\b/i,
-      /\b(charity|foundation|donation|community work|philanthropy|fundraiser)\b/i,
-      /\b(fashion|style|outfit|sneakers|collection|watch collection|car collection)\b/i,
-      /\b(business venture|brand launch|business|entrepreneur|investment|fashion line)\b/i,
-      /\b(feud|controversy|clashes|trash talk|confrontation|altercation|apologized|apology)\b/i,
-      /\b(criticized|criticism|called out|responds to|fires back|slams|blasts)\b/i,
-      /\b(prank|funny|hilarious|meme|surprise|unexpected|fun fact|off-court)\b/i,
-      /\b(arrested|lawsuit|legal dispute|court filing|investigation|incident)\b/i,
-      /\b(appearance|celebrity|movie|music|concert|fashion week|red carpet)\b/i
-    ];
-
-    return offCourtPatterns.some(pattern => pattern.test(text));
+    return !excludedPatterns.some(pattern => pattern.test(text));
   }
 
   // AI每日精选
@@ -173,13 +156,14 @@ export async function onRequest(context) {
       return [];
     }
 
-    const eligibleCandidates = candidates.filter(isPotentialOffCourtNews);
+    // 只排除明确的场内/常规球队新闻，其余候选全部交给 AI 做语义判断。
+    const limitedCandidates = candidates
+      .filter(isPotentialOffCourtNews)
+      .slice(0, 60);
 
-    if (!eligibleCandidates.length) {
+    if (!limitedCandidates.length) {
       return [];
     }
-
-    const limitedCandidates = eligibleCandidates.slice(0, 60);
 
     const compactCandidates = limitedCandidates.map((item, index) => ({
       index,
@@ -188,47 +172,42 @@ export async function onRequest(context) {
       source: item.source
     }));
 
-    const systemPrompt = `You are the chief editor of an NBA off-court news service.
+    const systemPrompt = `You are the chief editor of an NBA player off-court news service.
 
-Select only genuinely interesting NBA player off-court stories.
+Your task is to identify genuine news about NBA players' lives and activities OUTSIDE basketball games and routine team operations. Read the full title and description semantically. Do not rely on fixed keywords. Different wording can describe the same kind of off-court story.
 
-ALLOWED:
-1. Players' personal lives, family, partners and children.
-2. Social media posts, interactions and viral topics.
-3. Off-court stories, relationships, conflicts and public controversies.
-4. Charity, business, personal brands and lifestyle.
-5. Fashion, collections, hobbies and entertainment.
-6. Significant off-court incidents involving players.
-7. Non-game controversies directly involving players.
+SELECT stories only when the title AND description together support a specific, meaningful off-court event or topic, such as:
+- Personal life, family, partners, children, relationships, weddings, birthdays or vacations.
+- Social media posts, online interactions, viral moments or public reactions.
+- Feuds, arguments, controversies or public incidents unrelated to game performance.
+- Charity, philanthropy, community work or personal causes.
+- Business ventures, investments, personal brands or endorsements when there is a concrete development.
+- Fashion, collections, hobbies, entertainment appearances or other lifestyle news.
+- Significant legal or personal incidents involving a player, when supported by the description.
 
-STRICTLY EXCLUDE:
-1. Game recaps, previews, scores and results.
-2. Points, rebounds, assists and other game statistics.
-3. Ordinary game performance reviews and postgame interviews.
-4. Routine injuries, surgery, recovery and return-to-play news.
-5. Team tactics, practice, lineups and ordinary team news.
-6. Trade rumors, contracts and free agency.
-7. Betting, fantasy basketball, predictions and schedules.
-8. Stories that merely mention a player's name without an off-court event.
-9. Headlines that do not describe a specific event in the description.
-10. Duplicate, low-value or unverified speculation.
+STRICTLY REJECT:
+- Game results, recaps, previews, highlights, box scores or statistics.
+- On-court performance, records, milestones or postgame comments about a game.
+- Injuries, medical updates, surgery, rehabilitation or return-to-play reports.
+- Practice, training, coaching, tactics, lineups, rotations or routine team news.
+- Trades, roster moves, contracts, salary, free agency or transfer rumors.
+- Betting, fantasy basketball, rankings, predictions, schedules or playoff scenarios.
+- Generic interviews or quotes that do not report a meaningful off-court event.
+- Headlines that mention a player but whose description does not establish a real off-court story.
+- Duplicate stories, vague speculation, clickbait or content with insufficient evidence.
 
-IMPORTANT:
-- Do not select a story just because it involves a famous player.
-- The story must contain a clear off-court event or topic.
-- Do not guess information missing from the description.
-- Keep all player names exactly as written in the source.
-- Select only one story for each event.
-- Prefer different players and different events.
-- Quality is more important than quantity.
-- Select no more than the specified maximum.
-- Return an empty array if nothing qualifies.
-- Return only the original candidate index numbers.
+DECISION RULES:
+- A story does not qualify merely because it mentions an NBA player or uses an off-court-related word.
+- Use the description as evidence. If it does not explain what happened, reject it.
+- If a story mixes game news with a separate substantial off-court event, select it only when the off-court event is clearly the main subject.
+- Do not infer facts or invent context.
+- Keep player names exactly as written in the source.
+- Select at most one candidate for the same event. Prefer distinct players and distinct events.
+- Quality is more important than quantity. Select fewer than the maximum when appropriate, including zero.
+- Return only candidate index numbers, not titles or explanations.
 
-Return valid JSON only, without Markdown or explanation.
-
-Required format:
-{"selected":[0,2,5]}`;
+Return valid JSON only, with no Markdown or extra text.
+Required format: {"selected":[0,2,5]}`;
 
     const userPrompt = JSON.stringify({
       requiredMaximum: remaining,
@@ -476,6 +455,9 @@ Required format:
   let newlySelected = 0;
   let selectionError = null;
   let selectionReady = true;
+  let aiCalled = false;
+  let candidatesSentToAI = 0;
+  let aiReturnedSelectionCount = 0;
 
   // 第一步：撤销今天尚未审核的旧精选资格。
   // 只处理 pending，不影响 approved 和 rejected。
@@ -554,10 +536,14 @@ Required format:
         });
       }
 
+      candidatesSentToAI = candidates.filter(isPotentialOffCourtNews).length;
+      aiCalled = candidatesSentToAI > 0;
+
       const selectedItems = await selectDailyNews(
         candidates,
         remaining
       );
+      aiReturnedSelectionCount = selectedItems.length;
 
       for (const item of selectedItems) {
         const originalTitle = String(item.title || "").trim();
@@ -681,7 +667,7 @@ Required format:
   return json({
     success: finalItems.length > 0,
     service: "B-BALL Player Buzz",
-    mode: "English Original - Auto Publish",
+    mode: "English Original - Semantic AI Selection - Auto Publish",
     translationEnabled: false,
     dataSource: feeds.map(feed => feed.name),
     successfulSources,
@@ -697,6 +683,9 @@ Required format:
       dailyLimit,
       selectedToday: todayFeatured.length,
       newlySelected,
+      candidatesSentToAI,
+      aiCalled,
+      aiReturnedSelectionCount,
       remaining: Math.max(0, dailyLimit - todayFeatured.length),
       selectionError
     },
