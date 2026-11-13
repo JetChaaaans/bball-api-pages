@@ -124,29 +124,7 @@ export async function onRequest(context) {
     }
   }
 
-  // 只提前排除明确属于比赛、伤病、球队运作等内容。
-  // 不再要求新闻必须命中场外关键词，避免漏掉不同英文表达的真实场外新闻。
-  // 最终是否属于球员场外动态，交由 AI 结合标题和内容进行语义判断。
-  function isPotentialOffCourtNews(item) {
-    const text = (
-      String(item.title || "") + " " +
-      String(item.content || "")
-    ).toLowerCase();
-
-    const excludedPatterns = [
-      /\b(box score|game recap|game preview|matchup|postgame|pre-game|game highlights?)\b/i,
-      /\b(points|rebounds|assists|steals|blocks|field goal|three-pointers|triple-double)\b/i,
-      /\b(shot|shooting|scored|scores|scoring|win over|beat the|defeated|game-winning)\b/i,
-      /\b(injury|injured|sidelined|out for|misses? .*games?|surgery|fracture|sprain|strain|torn|tear|rehab|return from injury)\b/i,
-      /\b(trade rumors?|trade deadline|contract extension|free agency|waived|signed with|roster move)\b/i,
-      /\b(power rankings?|rankings?|standings|playoff picture|fantasy basketball|betting odds)\b/i,
-      /\b(practice|training camp|starting lineup|rotation|coach says|team announces|preseason workout)\b/i
-    ];
-
-    return !excludedPatterns.some(pattern => pattern.test(text));
-  }
-
-  // AI每日精选
+  // AI每日精选：同时判断NBA球员的场内和场外新闻。
   async function selectDailyNews(candidates, remaining) {
     if (!context.env.AI) {
       throw new Error("没有找到 AI 绑定");
@@ -156,10 +134,9 @@ export async function onRequest(context) {
       return [];
     }
 
-    // 只排除明确的场内/常规球队新闻，其余候选全部交给 AI 做语义判断。
-    const limitedCandidates = candidates
-      .filter(isPotentialOffCourtNews)
-      .slice(0, 60);
+    // 不再用关键词提前排除比赛、伤病、交易等新闻。
+    // 所有候选新闻统一交由AI进行语义判断。
+    const limitedCandidates = candidates.slice(0, 60);
 
     if (!limitedCandidates.length) {
       return [];
@@ -172,39 +149,69 @@ export async function onRequest(context) {
       source: item.source
     }));
 
-    const systemPrompt = `You are the chief editor of an NBA player off-court news service.
+    const systemPrompt = `You are the chief editor of NBA PLAYER BUZZ, an NBA player news service.
 
-Your task is to identify genuine news about NBA players' lives and activities OUTSIDE basketball games and routine team operations. Read the full title and description semantically. Do not rely on fixed keywords. Different wording can describe the same kind of off-court story.
+Your job is to select meaningful, genuine news about NBA PLAYERS.
 
-SELECT stories only when the title AND description together support a specific, meaningful off-court event or topic, such as:
-- Personal life, family, partners, children, relationships, weddings, birthdays or vacations.
-- Social media posts, online interactions, viral moments or public reactions.
-- Feuds, arguments, controversies or public incidents unrelated to game performance.
-- Charity, philanthropy, community work or personal causes.
-- Business ventures, investments, personal brands or endorsements when there is a concrete development.
-- Fashion, collections, hobbies, entertainment appearances or other lifestyle news.
-- Significant legal or personal incidents involving a player, when supported by the description.
+IMPORTANT:
+This is NOT an off-court-only gossip service.
+You must consider BOTH ON-COURT basketball news AND OFF-COURT personal news.
+
+A story can qualify if it is genuinely about an identifiable NBA player and reports a meaningful event, development, performance, or activity.
+
+CATEGORY A - ON-COURT AND BASKETBALL NEWS:
+
+Select meaningful player-related basketball news, including:
+- Game performances, scoring, rebounds, assists, steals, blocks and other statistics.
+- Outstanding performances, game-winning plays and important individual contributions.
+- Career highs, records, milestones and historical achievements.
+- Player performance analysis and significant changes in playing form.
+- Injuries, medical updates, rehabilitation, recovery and return-to-play news.
+- Suspensions, disciplinary actions and player-related incidents.
+- Trades, transfer rumors, roster moves, contract extensions, free agency and salary developments.
+- Player conflicts, rivalries and meaningful incidents during games.
+- Significant statements by players about basketball, teammates, opponents or their teams.
+- Individual player stories connected to important NBA events.
+
+CATEGORY B - OFF-COURT AND PERSONAL NEWS:
+
+Select meaningful personal or lifestyle news, including:
+- Family, partners, marriage, relationships, children and personal life.
+- Social media posts, online interactions, viral moments and public reactions.
+- Controversies, disputes, arguments and incidents outside games.
+- Charity, philanthropy, community activities and personal causes.
+- Business ventures, investments, endorsements and personal brands.
+- Fashion, hobbies, entertainment appearances and lifestyle activities.
+- Legal or personal incidents involving a player, when supported by the article.
 
 STRICTLY REJECT:
-- Game results, recaps, previews, highlights, box scores or statistics.
-- On-court performance, records, milestones or postgame comments about a game.
-- Injuries, medical updates, surgery, rehabilitation or return-to-play reports.
-- Practice, training, coaching, tactics, lineups, rotations or routine team news.
-- Trades, roster moves, contracts, salary, free agency or transfer rumors.
-- Betting, fantasy basketball, rankings, predictions, schedules or playoff scenarios.
-- Generic interviews or quotes that do not report a meaningful off-court event.
-- Headlines that mention a player but whose description does not establish a real off-court story.
-- Duplicate stories, vague speculation, clickbait or content with insufficient evidence.
 
-DECISION RULES:
-- A story does not qualify merely because it mentions an NBA player or uses an off-court-related word.
-- Use the description as evidence. If it does not explain what happened, reject it.
-- If a story mixes game news with a separate substantial off-court event, select it only when the off-court event is clearly the main subject.
-- Do not infer facts or invent context.
-- Keep player names exactly as written in the source.
-- Select at most one candidate for the same event. Prefer distinct players and distinct events.
-- Quality is more important than quantity. Select fewer than the maximum when appropriate, including zero.
-- Return only candidate index numbers, not titles or explanations.
+- General team news that does not focus on a specific NBA player.
+- General league announcements without meaningful player-related information.
+- Game schedules, routine previews and upcoming match listings.
+- Generic team promotions, advertisements and sponsor announcements.
+- Generic rankings, betting odds and fantasy basketball advice without meaningful player news.
+- Pure opinion pieces that contain no concrete player-related development.
+- Duplicate reports about the same event.
+- Vague headlines or descriptions that do not provide enough information to understand the story.
+- Articles that merely mention a player's name without making that player the actual subject.
+- Non-NBA sports news or stories about people who are not NBA players.
+
+EDITORIAL RULES:
+
+1. Consider both the title and description together.
+2. Identify the actual subject of each story. The main subject must be an NBA player.
+3. Do not reject a story just because it concerns a game, injury, suspension, trade or contract. These are valid categories of NBA player news.
+4. Do not select a story merely because it contains an NBA player's name.
+5. Prefer concrete events, developments and meaningful information over routine updates.
+6. If the description is too vague to establish what happened, reject it.
+7. Avoid selecting multiple reports about the same event.
+8. Select a balanced mix of on-court and off-court stories when good candidates are available. Do not force a balance when one category has no good news.
+9. Quality is more important than quantity. Select fewer than the maximum when appropriate, including zero.
+10. Never invent facts or add information that is not in the supplied title or description.
+11. Preserve player names exactly as written in the original source.
+12. Do not translate titles or descriptions.
+13. Return only candidate index numbers, not titles or explanations.
 
 Return valid JSON only, with no Markdown or extra text.
 Required format: {"selected":[0,2,5]}`;
@@ -277,10 +284,7 @@ Required format: {"selected":[0,2,5]}`;
         !seen.has(index)
       ) {
         seen.add(index);
-
-        if (isPotentialOffCourtNews(limitedCandidates[index])) {
-          indexes.push(index);
-        }
+        indexes.push(index);
       }
     }
 
@@ -462,7 +466,7 @@ Required format: {"selected":[0,2,5]}`;
   // 第一步：撤销今天尚未审核的旧精选资格。
   // 只处理 pending，不影响 approved 和 rejected。
   try {
-    const resetResult = await db.prepare(`
+    await db.prepare(`
       UPDATE playerbuzz_items
       SET
         ai_selected = 0,
@@ -473,7 +477,7 @@ Required format: {"selected":[0,2,5]}`;
         AND review_status = 'pending'
     `).bind(today).run();
 
-    // 第二步：统计今天已经正式发布的 AI 精选新闻。
+    // 第二步：统计今天已经正式发布的AI精选新闻。
     // 已通过的新闻保留并计入每日20条上限。
     const selectedResult = await db.prepare(`
       SELECT id
@@ -497,7 +501,8 @@ Required format: {"selected":[0,2,5]}`;
   let selectedToday = selectedIds.size;
   const remaining = Math.max(0, dailyLimit - selectedToday);
 
-  // 第三步：重新进行AI精选，并直接自动发布。
+  // 第三步：把所有普通待审核新闻交给AI判断。
+  // 不再提前排除场内新闻或场外新闻。
   if (selectionReady && remaining > 0) {
     try {
       const candidates = [];
@@ -525,10 +530,6 @@ Required format: {"selected":[0,2,5]}`;
           continue;
         }
 
-        if (!isPotentialOffCourtNews(item)) {
-          continue;
-        }
-
         candidates.push({
           ...item,
           title: existing.original_title || item.title || "",
@@ -536,13 +537,14 @@ Required format: {"selected":[0,2,5]}`;
         });
       }
 
-      candidatesSentToAI = candidates.filter(isPotentialOffCourtNews).length;
+      candidatesSentToAI = candidates.length;
       aiCalled = candidatesSentToAI > 0;
 
       const selectedItems = await selectDailyNews(
         candidates,
         remaining
       );
+
       aiReturnedSelectionCount = selectedItems.length;
 
       for (const item of selectedItems) {
@@ -667,7 +669,7 @@ Required format: {"selected":[0,2,5]}`;
   return json({
     success: finalItems.length > 0,
     service: "B-BALL Player Buzz",
-    mode: "English Original - Semantic AI Selection - Auto Publish",
+    mode: "NBA Player News - On-Court & Off-Court - AI Selection - Auto Publish",
     translationEnabled: false,
     dataSource: feeds.map(feed => feed.name),
     successfulSources,
@@ -679,7 +681,7 @@ Required format: {"selected":[0,2,5]}`;
     },
     dailySelection: {
       date: today,
-      mode: "AI精选后自动发布（英文原文）",
+      mode: "NBA球员场内及场外动态AI精选后自动发布（英文原文）",
       dailyLimit,
       selectedToday: todayFeatured.length,
       newlySelected,
