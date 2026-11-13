@@ -21,18 +21,33 @@ button{border:0;border-radius:8px;padding:11px 18px;cursor:pointer;font-size:14p
 .primary{background:#f58225;color:white}
 .approve{background:#16865b;color:white}
 .reject{background:#f0f2f5;color:#687789}
+.batch{background:#147b55;color:white}
+.secondary{background:#eaf0f6;color:#41556b}
 button:disabled{opacity:.5;cursor:not-allowed}
 .toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .toolbar select{width:auto;min-width:130px}
-.status{font-size:13px;color:#7d8b9c;margin-top:12px}
+.status{font-size:13px;color:#7d8b9c;margin-top:12px;line-height:1.7}
 .news-card h3{font-size:17px;margin:0 0 10px;line-height:1.5}
-.meta{font-size:12px;color:#8492a3;margin-bottom:14px;line-height:1.8}
+.meta{font-size:12px;color:#8492a3;margin-bottom:14px;line-height:1.8;overflow-wrap:anywhere}
 .field{margin-top:13px}
 .field label{display:block;font-size:13px;font-weight:bold;margin-bottom:7px;color:#53657a}
 .actions{display:flex;gap:10px;margin-top:16px}
 .empty{text-align:center;color:#91a0b0;padding:45px 10px}
 .source{color:#f58225}
-@media(max-width:600px){header{padding:18px}header h1{font-size:17px}.actions button{flex:1}.panel{padding:15px}}
+.batch-panel{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid #edf0f4}
+.batch-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px;color:#53657a}
+.check-row{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+.check-row input{width:18px;height:18px}
+.card-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+.card-check{width:20px;height:20px;flex-shrink:0}
+@media(max-width:600px){
+header{padding:18px}
+header h1{font-size:17px}
+.actions button{flex:1}
+.panel{padding:15px}
+.batch-panel{align-items:stretch}
+.batch-panel button{width:100%}
+}
 </style>
 </head>
 <body>
@@ -64,7 +79,20 @@ button:disabled{opacity:.5;cursor:not-allowed}
         <button class="primary" id="refreshBtn">刷新</button>
       </div>
     </div>
+
     <div class="status" id="count"></div>
+
+    <div class="batch-panel" id="batchPanel">
+      <div class="batch-left">
+        <label class="check-row">
+          <input type="checkbox" id="selectAll">
+          选择当前页面
+        </label>
+        <span id="selectedCount">已选择0条</span>
+        <span>每次最多20条</span>
+      </div>
+      <button class="batch" id="batchApproveBtn">一键审核通过所选新闻</button>
+    </div>
   </section>
 
   <div id="newsList"></div>
@@ -73,10 +101,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <script>
 const API_URL = "/playerbuzz/review";
 let adminPassword = "";
+let currentItems = [];
 
 const message = document.getElementById("message");
 const workspace = document.getElementById("workspace");
 const newsList = document.getElementById("newsList");
+const batchPanel = document.getElementById("batchPanel");
+const batchApproveBtn = document.getElementById("batchApproveBtn");
 
 function setMessage(text) {
   message.textContent = text;
@@ -143,19 +174,56 @@ async function login() {
   }
 }
 
+function updateSelection() {
+  const checked = newsList.querySelectorAll(".item-check:checked");
+  const count = checked.length;
+
+  document.getElementById("selectedCount").textContent =
+    "已选择" + count + "条";
+
+  document.getElementById("selectAll").checked =
+    currentItems.length > 0 &&
+    currentItems.every(item => {
+      const checkbox = newsList.querySelector(
+        '.item-check[data-id="' + CSS.escape(String(item.id)) + '"]'
+      );
+      return checkbox && checkbox.checked;
+    });
+
+  batchApproveBtn.disabled =
+    document.getElementById("statusFilter").value !== "pending" ||
+    count === 0 ||
+    count > 20;
+
+  if (count > 20) {
+    document.getElementById("selectedCount").textContent =
+      "已选择" + count + "条，请减少到20条以内";
+  }
+}
+
 function renderNews(items) {
+  currentItems = items || [];
+
   if (!items || items.length === 0) {
     newsList.innerHTML = '<div class="panel empty">当前没有符合条件的新闻。</div>';
+    updateSelection();
     return;
   }
 
   newsList.innerHTML = items.map(item => `
     <article class="news-card" data-id="${escapeHtml(item.id)}">
-      <h3>${escapeHtml(item.original_title)}</h3>
-      <div class="meta">
-        来源：<span class="source">${escapeHtml(item.source)}</span>
-        · 发布时间：${escapeHtml(item.published_at || "未知")}
-        · 状态：${escapeHtml(item.review_status)}
+      <div class="card-top">
+        <div>
+          <h3>${escapeHtml(item.original_title)}</h3>
+          <div class="meta">
+            来源：<span class="source">${escapeHtml(item.source)}</span>
+            · 发布时间：${escapeHtml(item.published_at || "未知")}
+            · 状态：${escapeHtml(item.review_status)}
+          </div>
+        </div>
+        ${item.review_status === "pending"
+          ? `<input class="card-check item-check" type="checkbox" data-id="${escapeHtml(item.id)}" aria-label="选择这条新闻">`
+          : ""}
       </div>
 
       <div class="field">
@@ -196,6 +264,12 @@ function renderNews(items) {
   newsList.querySelectorAll("button[data-action]").forEach(button => {
     button.addEventListener("click", () => reviewItem(button));
   });
+
+  newsList.querySelectorAll(".item-check").forEach(checkbox => {
+    checkbox.addEventListener("change", updateSelection);
+  });
+
+  updateSelection();
 }
 
 async function loadNews() {
@@ -204,10 +278,16 @@ async function loadNews() {
   setMessage("正在读取新闻……");
   newsList.innerHTML = '<div class="panel empty">正在加载……</div>';
 
+  batchApproveBtn.disabled = true;
+  document.getElementById("selectAll").checked = false;
+
   try {
     const data = await apiRequest("GET", null, status);
+
     document.getElementById("count").textContent =
       "当前显示 " + data.total + " 条新闻";
+
+    batchPanel.hidden = status !== "pending";
     renderNews(data.items);
     setMessage("新闻读取成功。");
   } catch (error) {
@@ -254,9 +334,93 @@ async function reviewItem(button) {
   }
 }
 
+function selectCurrentPage() {
+  const checkboxes = newsList.querySelectorAll(".item-check");
+  const allChecked = checkboxes.length > 0 &&
+    Array.from(checkboxes).every(item => item.checked);
+
+  checkboxes.forEach((checkbox, index) => {
+    checkbox.checked = !allChecked && index < 20;
+  });
+
+  updateSelection();
+}
+
+async function batchApprove() {
+  if (document.getElementById("statusFilter").value !== "pending") {
+    alert("请先切换到待审核列表。");
+    return;
+  }
+
+  const selectedCards = Array.from(
+    newsList.querySelectorAll(".item-check:checked")
+  );
+
+  if (selectedCards.length === 0) {
+    alert("请先勾选需要审核的新闻。");
+    return;
+  }
+
+  if (selectedCards.length > 20) {
+    alert("每次最多审核20条，请减少选择数量。");
+    return;
+  }
+
+  const items = [];
+
+  for (const checkbox of selectedCards) {
+    const card = checkbox.closest(".news-card");
+
+    const item = {
+      id: card.dataset.id,
+      chinese_title: card.querySelector(".chinese-title").value.trim(),
+      chinese_content: card.querySelector(".chinese-content").value.trim(),
+      player_name: card.querySelector(".player-name").value.trim(),
+      category: card.querySelector(".category").value
+    };
+
+    if (!item.chinese_title || !item.chinese_content) {
+      alert("有新闻缺少中文标题或摘要，请补充后再审核。");
+      return;
+    }
+
+    items.push(item);
+  }
+
+  const confirmed = confirm(
+    "确定一次性审核通过选中的 " + items.length +
+    " 条新闻吗？\n\n只有这些勾选的待审核新闻会被批准。"
+  );
+
+  if (!confirmed) return;
+
+  batchApproveBtn.disabled = true;
+  setMessage("正在批量审核，请不要关闭页面……");
+
+  try {
+    const result = await apiRequest("POST", {
+      action: "approve_batch",
+      items
+    });
+
+    alert(
+      "批量审核完成！\n\n成功通过：" + result.approved +
+      "条\n跳过：" + result.skipped + "条"
+    );
+
+    await loadNews();
+  } catch (error) {
+    alert("批量审核失败：" + error.message);
+    batchApproveBtn.disabled = false;
+    setMessage("批量审核失败：" + error.message);
+  }
+}
+
 document.getElementById("loginBtn").addEventListener("click", login);
 document.getElementById("refreshBtn").addEventListener("click", loadNews);
 document.getElementById("statusFilter").addEventListener("change", loadNews);
+document.getElementById("selectAll").addEventListener("change", selectCurrentPage);
+batchApproveBtn.addEventListener("click", batchApprove);
 
 document.getElementById("password").addEventListener("keydown", event => {
   if (event.key === "Enter") login();
@@ -264,4 +428,3 @@ document.getElementById("password").addEventListener("keydown", event => {
 </script>
 </body>
 </html>
-
