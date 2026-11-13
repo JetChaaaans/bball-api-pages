@@ -574,7 +574,6 @@ Return valid JSON only:
   // INSERT OR IGNORE 保留原有ID冲突保护。
   let databaseSaved = 0;
   let databaseError = null;
-  const insertedItems = [];
 
   try {
     for (const item of finalItems) {
@@ -595,12 +594,7 @@ Return valid JSON only:
       ).run();
 
       const changes = insertResult.meta?.changes || 0;
-
       databaseSaved += changes;
-
-      if (changes > 0) {
-        insertedItems.push(item);
-      }
     }
   } catch (error) {
     databaseError = error.message || "数据库保存失败";
@@ -676,12 +670,15 @@ Return valid JSON only:
   let selectedToday = selectedIds.size;
   const remaining = Math.max(0, dailyLimit - selectedToday);
 
-  // 只让本次真正新增的新闻参与AI精选。
-  if (selectionReady && remaining > 0 && insertedItems.length > 0) {
+  // 修复：使用本轮去重后的 finalItems 作为AI候选来源。
+  // 这样即使某条新闻之前已经入库，INSERT OR IGNORE 没有新增记录，
+  // 只要它仍然是 pending 状态，也可以继续参与AI精选。
+  // approved 和 rejected 新闻仍然不会进入候选池。
+  if (selectionReady && remaining > 0 && finalItems.length > 0) {
     try {
       const candidates = [];
 
-      for (const item of insertedItems) {
+      for (const item of finalItems) {
         const existing = await db.prepare(`
           SELECT
             id,
@@ -758,8 +755,8 @@ Return valid JSON only:
 
   selectedToday = selectedIds.size;
 
-  // 精选新闻优先返回。
-  const orderedItems = [...insertedItems].sort((a, b) => {
+  // 精选新闻优先返回本轮去重后的全部新闻。
+  const orderedItems = [...finalItems].sort((a, b) => {
     const aSelected = selectedIds.has(String(a.id)) ? 1 : 0;
     const bSelected = selectedIds.has(String(b.id)) ? 1 : 0;
 
