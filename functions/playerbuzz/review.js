@@ -25,7 +25,6 @@ export async function onRequest(context) {
     return json({ success: false, message: "不支持的请求方式" }, 405);
   }
 
-  // 验证管理员密码
   const adminPassword = context.env.ADMIN_PASSWORD;
   const inputPassword = context.request.headers.get("X-Admin-Password");
 
@@ -72,14 +71,14 @@ export async function onRequest(context) {
       if (status === "all") {
         result = await db.prepare(`
           SELECT * FROM playerbuzz_items
-          ORDER BY published_at DESC
+          ORDER BY COALESCE(published_at, created_at) DESC
           LIMIT 100
         `).all();
       } else {
         result = await db.prepare(`
           SELECT * FROM playerbuzz_items
           WHERE review_status = ?
-          ORDER BY published_at DESC
+          ORDER BY COALESCE(published_at, created_at) DESC
           LIMIT 100
         `).bind(status).all();
       }
@@ -104,6 +103,95 @@ export async function onRequest(context) {
         }, 400);
       }
 
+      // 批量审核：一次最多20条
+      if (body.action === "approve_batch") {
+        const items = body.items;
+
+        if (!Array.isArray(items) || items.length === 0) {
+          return json({
+            success: false,
+            message: "请选择需要审核的新闻"
+          }, 400);
+        }
+
+        if (items.length > 20) {
+          return json({
+            success: false,
+            message: "每次最多审核20条新闻"
+          }, 400);
+        }
+
+        const ids = items.map(item => String(item.id || ""));
+
+        if (ids.some(id => !id) || new Set(ids).size !== ids.length) {
+          return json({
+            success: false,
+            message: "新闻ID缺失或重复"
+          }, 400);
+        }
+
+        let approved = 0;
+        let skipped = 0;
+        const errors = [];
+
+        for (const item of items) {
+          const id = String(item.id);
+
+          const title = String(item.chinese_title || "").trim();
+          const content = String(item.chinese_content || "").trim();
+
+          if (!title || !content) {
+            skipped++;
+            errors.push({
+              id,
+              message: "中文标题或摘要为空"
+            });
+            continue;
+          }
+
+          const result = await db.prepare(`
+            UPDATE playerbuzz_items
+            SET
+              chinese_title = ?,
+              chinese_content = ?,
+              player_name = ?,
+              category = ?,
+              review_status = 'approved',
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND review_status = 'pending'
+          `).bind(
+            title,
+            content,
+            String(item.player_name || "").trim(),
+            String(item.category || "NBA新闻").trim(),
+            id
+          ).run();
+
+          const changes = result.meta?.changes || 0;
+
+          if (changes > 0) {
+            approved++;
+          } else {
+            skipped++;
+            errors.push({
+              id,
+              message: "新闻不存在或已不处于待审核状态"
+            });
+          }
+        }
+
+        return json({
+          success: true,
+          message: "批量审核处理完成",
+          requested: items.length,
+          approved,
+          skipped,
+          errors
+        });
+      }
+
+      // 单条审核
       const {
         id,
         action,
@@ -121,7 +209,9 @@ export async function onRequest(context) {
       }
 
       const existing = await db.prepare(`
-        SELECT id FROM playerbuzz_items WHERE id = ?
+        SELECT id, review_status
+        FROM playerbuzz_items
+        WHERE id = ?
       `).bind(String(id)).first();
 
       if (!existing) {
@@ -131,22 +221,40 @@ export async function onRequest(context) {
         }, 404);
       }
 
+      if (existing.review_status !== "pending") {
+        return json({
+          success: false,
+          message: "这条新闻已经处理过，不能重复审核"
+        }, 409);
+      }
+
       if (action === "approve") {
+        if (
+          !String(chinese_title || "").trim() ||
+          !String(chinese_content || "").trim()
+        ) {
+          return json({
+            success: false,
+            message: "请填写中文标题和中文摘要"
+          }, 400);
+        }
+
         await db.prepare(`
           UPDATE playerbuzz_items
           SET
-            chinese_title = COALESCE(?, chinese_title),
-            chinese_content = COALESCE(?, chinese_content),
-            player_name = COALESCE(?, player_name),
-            category = COALESCE(?, category),
+            chinese_title = ?,
+            chinese_content = ?,
+            player_name = ?,
+            category = ?,
             review_status = 'approved',
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
+            AND review_status = 'pending'
         `).bind(
-          chinese_title ?? null,
-          chinese_content ?? null,
-          player_name ?? null,
-          category ?? null,
+          String(chinese_title).trim(),
+          String(chinese_content).trim(),
+          String(player_name || "").trim(),
+          String(category || "NBA新闻").trim(),
           String(id)
         ).run();
       } else {
@@ -156,6 +264,7 @@ export async function onRequest(context) {
             review_status = 'rejected',
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
+            AND review_status = 'pending'
         `).bind(String(id)).run();
       }
 
@@ -173,4 +282,3 @@ export async function onRequest(context) {
     }, 500);
   }
 }
-
