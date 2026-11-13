@@ -74,7 +74,7 @@ export async function onRequest(context) {
     return values.year + "-" + values.month + "-" + values.day;
   }
 
-  // 常见NBA球员英文姓名保护名单
+  // 球员英文姓名保护名单
   const playerNames = [
     "LeBron James", "Stephen Curry", "Kevin Durant", "Nikola Jokic",
     "Luka Doncic", "Giannis Antetokounmpo", "Victor Wembanyama",
@@ -107,37 +107,57 @@ export async function onRequest(context) {
     "Derik Queen", "Nolan Traore"
   ];
 
+  // 只保护名单中不重复的姓氏，避免 Smart 被翻译或改成其他球员
+  const surnameCounts = {};
+
+  for (const fullName of playerNames) {
+    const parts = fullName.replace(/\./g, "").split(/\s+/);
+    const surname = parts[parts.length - 1];
+
+    if (surname && surname.length > 2) {
+      surnameCounts[surname.toLowerCase()] =
+        (surnameCounts[surname.toLowerCase()] || 0) + 1;
+    }
+  }
+
+  const uniqueSurnames = Object.keys(surnameCounts)
+    .filter(name => surnameCounts[name] === 1);
+
   function protectPlayerNames(title, content) {
     const combined = title + " " + content;
-    const found = [];
+    const namesToProtect = [];
 
+    // 保护名单中的完整姓名
     for (const fullName of playerNames) {
-      const pattern = new RegExp("\\b" + escapeRegExp(fullName) + "\\b", "i");
-      if (pattern.test(combined)) {
-        found.push({
-          original: fullName,
-          surname: fullName.split(/\s+/).pop()
-        });
+      const pattern = new RegExp(
+        "\\b" + escapeRegExp(fullName) + "\\b",
+        "i"
+      );
+
+      const match = combined.match(pattern);
+
+      if (match) {
+        namesToProtect.push(match[0]);
       }
     }
 
-    const entries = [];
+    // 即使原文只写姓氏，也保护唯一姓氏
+    for (const surname of uniqueSurnames) {
+      const pattern = new RegExp(
+        "\\b" + escapeRegExp(surname) + "\\b",
+        "i"
+      );
 
-    for (const player of found) {
-      entries.push(player.original);
+      const match = combined.match(pattern);
 
-      if (player.surname.length > 2) {
-        const surnamePattern = new RegExp(
-          "\\b" + escapeRegExp(player.surname) + "\\b", "i"
-        );
-
-        if (surnamePattern.test(combined)) {
-          entries.push(player.surname);
-        }
+      if (match) {
+        namesToProtect.push(match[0]);
       }
     }
 
-    const uniqueNames = [...new Set(entries)].sort((a, b) => b.length - a.length);
+    const uniqueNames = [...new Set(namesToProtect)]
+      .sort((a, b) => b.length - a.length);
+
     const replacements = [];
     let index = 0;
 
@@ -145,19 +165,27 @@ export async function onRequest(context) {
       let result = text;
 
       for (const name of uniqueNames) {
-        const pattern = new RegExp("\\b" + escapeRegExp(name) + "\\b", "gi");
+        const pattern = new RegExp(
+          "\\b" + escapeRegExp(name) + "\\b",
+          "gi"
+        );
 
         result = result.replace(pattern, matched => {
           const existing = replacements.find(
             item => item.original.toLowerCase() === matched.toLowerCase()
           );
 
-          if (existing) return existing.token;
+          if (existing) {
+            return existing.token;
+          }
 
           const token = "BBALLPLAYER" + index + "TOKEN";
           index++;
 
-          replacements.push({ token, original: matched });
+          replacements.push({
+            token,
+            original: matched
+          });
 
           return token;
         });
@@ -218,24 +246,36 @@ export async function onRequest(context) {
       description: protectedText.content
     });
 
-    const systemPrompt = `你是一名专业的NBA中文新闻编辑。
+    const systemPrompt = `你是一名严谨的NBA中文新闻编辑。
 
-将用户提供的英文NBA新闻标题和摘要翻译成准确、自然的简体中文。
+请把英文新闻标题和摘要翻译成简体中文。
 
-必须遵守：
-1. 所有 BBALLPLAYER数字TOKEN 占位符必须原样保留，不能翻译、删除或修改。
-2. 占位符代表NBA球员英文姓名，最终由系统自动还原。
-3. 球员姓名必须保留英文原名，不得翻译或音译。
-4. 不要猜测球员身份，不得把一个球员写成另一个球员。
-5. 球队名称翻译成常见中文名称。
-6. 标题和摘要都必须翻译成中文。
-7. 保留原文比分、数据、日期和比赛事实。
-8. oblique 是腹斜肌，不是腹股沟。
-9. groin 是腹股沟；strain 是拉伤；tear 是撕裂。
-10. 篮球投篮数据顺序必须正确。例如 12-20 FG 应译为20投12中；4-8 3PT 应译为三分8投4中；2-2 FT 应译为罚球2罚2中。
-11. 不得编造原文没有的信息。
-12. 不要输出解释、分析或Markdown。
-13. 必须输出合法JSON，字符串使用英文双引号。
+【球员姓名规则】
+1. 所有 BBALLPLAYER数字TOKEN 必须原样保留，不能修改、拆分或删除。
+2. 这些占位符代表原文中的球员英文姓名或姓氏。
+3. 球员姓名必须保留英文，不得翻译、音译或自行补全。
+4. 不得将一个球员的姓名替换成另一个球员。
+5. 原文只出现姓氏时，仍然保留该姓氏，不要擅自补全名字。
+6. 不确定的人名保持英文原文，不要猜测。
+
+【事实准确性】
+7. 球队名称翻译成常见中文名称。
+8. 不得编造原文没有的信息。
+9. 不得改变伤病部位、伤病程度、球员身份、球队、比赛结果、日期和数字。
+10. oblique 是腹斜肌，不是腹股沟。
+11. groin 是腹股沟；strain 是拉伤；tear 是撕裂。
+12. 不能把球员的名字、伤病、球队或事件张冠李戴。
+13. 如果原文存在歧义，不要擅自推断。
+
+【篮球数据】
+14. 12-20 FG 应译为20投12中。
+15. 4-8 3PT 应译为三分8投4中。
+16. 2-2 FT 应译为罚球2罚2中。
+
+【输出】
+17. 标题和摘要都必须翻译成中文。
+18. 不要输出解释、分析或Markdown。
+19. 必须输出合法JSON。
 
 只允许返回：
 {"title":"中文标题","summary":"中文摘要"}`;
@@ -264,7 +304,8 @@ export async function onRequest(context) {
       );
 
       const message = result?.choices?.[0]?.message;
-      const rawText = message?.content || result?.response || result?.output_text || "";
+      const rawText =
+        message?.content || result?.response || result?.output_text || "";
 
       if (typeof rawText !== "string" || !rawText.trim()) {
         throw new Error("AI没有返回翻译内容");
@@ -279,7 +320,7 @@ export async function onRequest(context) {
       try {
         const translated = await requestTranslation(
           attempt === 2
-            ? "\n再次检查：球员姓名占位符必须完整保留；篮球数据顺序必须正确；伤病部位必须准确。"
+            ? "\n再次检查：姓名占位符必须完整保留；绝对不能改变任何人名、球队、伤病部位和数字。"
             : ""
         );
 
@@ -334,7 +375,48 @@ export async function onRequest(context) {
     throw lastError || new Error("AI翻译失败");
   }
 
-  // AI每日精选：从RSS新闻中选出最多20条高价值场外新闻
+  // 硬性过滤：只让有明确场外话题特征的新闻进入AI精选
+  function isPotentialOffCourtNews(item) {
+    const text = (
+      String(item.title || "") + " " +
+      String(item.content || "")
+    ).toLowerCase();
+
+    // 普通比赛、数据、伤病和球队事务，一律排除
+    const excludedPatterns = [
+      /\b(box score|game recap|game preview|matchup|postgame|pre-game)\b/i,
+      /\b(points|rebounds|assists|steals|blocks|field goal|three-pointers)\b/i,
+      /\b(shot|shooting|scored|scores|scoring|win over|beat the|defeated)\b/i,
+      /\b(injury|injured|sidelined|out for|misses? .*games?|surgery|fracture|sprain|strain|torn|tear|rehab|return from injury)\b/i,
+      /\b(trade rumors?|trade deadline|contract extension|free agency|waived|signed with|roster move)\b/i,
+      /\b(power rankings?|rankings?|standings|playoff picture|fantasy basketball|betting odds)\b/i,
+      /\b(practice|training camp|starting lineup|rotation|coach says|team announces)\b/i
+    ];
+
+    if (excludedPatterns.some(pattern => pattern.test(text))) {
+      return false;
+    }
+
+    // 必须具备明确的场外话题信号
+    const offCourtPatterns = [
+      /\b(instagram|tiktok|twitter|x.com|social media|youtube|podcast)\b/i,
+      /\b(posted|posting|viral|went viral|online reaction|responded|reply|replied)\b/i,
+      /\b(wife|husband|girlfriend|boyfriend|partner|family|son|daughter|children|kids|mother|father)\b/i,
+      /\b(wedding|marriage|dating|relationship|birthday|vacation|holiday|home life)\b/i,
+      /\b(charity|foundation|donation|community work|philanthropy|fundraiser)\b/i,
+      /\b(fashion|style|outfit|sneakers|collection|watch collection|car collection)\b/i,
+      /\b(business venture|brand launch|business|entrepreneur|investment|fashion line)\b/i,
+      /\b(feud|controversy|clashes|trash talk|confrontation|altercation|apologized|apology)\b/i,
+      /\b(criticized|criticism|called out|responds to|fires back|slams|blasts)\b/i,
+      /\b(prank|funny|hilarious|meme|surprise|unexpected|fun fact|off-court)\b/i,
+      /\b(arrested|lawsuit|legal dispute|court filing|investigation|incident)\b/i,
+      /\b(appearance|celebrity|movie|music|concert|fashion week|red carpet)\b/i
+    ];
+
+    return offCourtPatterns.some(pattern => pattern.test(text));
+  }
+
+  // AI每日精选：只从通过硬性过滤的场外新闻中选择
   async function selectDailyNews(candidates, remaining) {
     if (!context.env.AI) {
       throw new Error("没有找到 AI 绑定");
@@ -344,7 +426,13 @@ export async function onRequest(context) {
       return [];
     }
 
-    const limitedCandidates = candidates.slice(0, 60);
+    const eligibleCandidates = candidates.filter(isPotentialOffCourtNews);
+
+    if (!eligibleCandidates.length) {
+      return [];
+    }
+
+    const limitedCandidates = eligibleCandidates.slice(0, 60);
 
     const compactCandidates = limitedCandidates.map((item, index) => ({
       index,
@@ -353,36 +441,43 @@ export async function onRequest(context) {
       source: item.source
     }));
 
-    const systemPrompt = `你是专业的NBA球员场外新闻主编，负责为NBA球迷筛选每日值得阅读的球员八卦新闻。
+    const systemPrompt = `你是NBA球员场外新闻主编。
 
-你的任务不是选择普通NBA比赛新闻，而是从候选新闻中挑选最有话题性、最值得球迷关注的内容。
+你的任务是从候选内容中挑选真正值得NBA球迷阅读的场外新闻。
 
-优先选择：
-1. NBA球员的场外生活、家庭、感情、个人生活动态。
-2. 球员社交媒体发布、互动、回应、争议和热门话题。
-3. 球员之间的趣闻、冲突、关系变化、公开言论。
-4. 球员商业活动、个人品牌、收藏、兴趣爱好和生活方式。
-5. 球员重要的场外事件、公众讨论和有新闻价值的突发动态。
-6. 球星具有传播价值的独特故事。
+【只允许选择以下内容】
+1. 球员本人及家庭、伴侣、子女、朋友的生活动态。
+2. 球员社交媒体发布、互动、回应和网络热门话题。
+3. 球员之间的场外趣闻、冲突、关系变化和公开争议。
+4. 球员公益活动、商业活动、个人品牌和生活方式。
+5. 球员穿搭、收藏、兴趣爱好、娱乐活动和个人故事。
+6. 有明确事件、有新闻价值的场外突发动态。
+7. 球员本人参与或直接回应的非比赛争议。
 
-严格排除：
+【以下内容绝对不能选择】
 1. 普通比赛战报、赛前预告、赛后比分。
-2. 普通得分、篮板、助攻等比赛统计。
-3. 单纯的比赛表现评价。
-4. 没有具体话题的常规球队新闻。
-5. 重复、相似或只是改写同一事件的新闻。
-6. 内容过短、信息不完整、无法判断具体事件的新闻。
-7. 仅仅因为球员知名就入选，但新闻本身没有话题性的内容。
+2. 得分、篮板、助攻、投篮命中率等比赛数据。
+3. 普通比赛表现评价或赛后采访。
+4. 常规伤病、手术、复出、缺席比赛消息。
+5. 球队战术、训练、阵容、轮换和普通球队新闻。
+6. 普通交易传闻、合同、自由球员和排名消息。
+7. 博彩、Fantasy、预测和赛程。
+8. 只有球员名字出现，但没有球员场外事件的文章。
+9. 只有标题噱头，摘要没有具体事件的文章。
+10. 重复事件、低价值消息和无法核实的猜测。
 
-筛选原则：
+【特别要求】
+- 不能因为一条新闻涉及明星球员就自动选中。
+- 新闻必须有明确的场外事件或话题。
+- 不允许选择普通比赛或伤病新闻。
+- 不允许根据标题猜测摘要没有提供的内容。
+- 球员英文姓名只作为原文标识，不要翻译或改变姓名。
+- 同一事件只选择一条。
+- 尽量选择不同球员和不同事件。
 - 质量优先，不需要凑足数量。
 - 最多选择指定数量。
-- 尽量选择不同球员、不同事件。
-- 同一事件只能选一条。
-- 不能根据标题猜测原文没有的信息。
-- 不得编造新闻。
+- 如果没有符合条件的新闻，返回空数组。
 - 只返回候选新闻原有的 index 数字。
-- 如果没有合适新闻，返回空数组。
 
 必须只返回合法JSON，不要输出解释或Markdown。
 
@@ -417,7 +512,8 @@ export async function onRequest(context) {
     );
 
     const message = result?.choices?.[0]?.message;
-    const rawText = message?.content || result?.response || result?.output_text || "";
+    const rawText =
+      message?.content || result?.response || result?.output_text || "";
 
     if (typeof rawText !== "string" || !rawText.trim()) {
       throw new Error("AI没有返回精选结果");
@@ -442,7 +538,11 @@ export async function onRequest(context) {
         !seen.has(index)
       ) {
         seen.add(index);
-        indexes.push(index);
+
+        // 再次执行硬性过滤，防止AI错误选入
+        if (isPotentialOffCourtNews(limitedCandidates[index])) {
+          indexes.push(index);
+        }
       }
     }
 
@@ -481,7 +581,7 @@ export async function onRequest(context) {
     }, 500);
   }
 
-  // 历史修复模式：只重新翻译待审核新闻，不采集新内容
+  // 历史修复模式：只重新翻译待审核新闻
   if (repairMode) {
     let rows;
 
@@ -625,7 +725,7 @@ export async function onRequest(context) {
     (Date.parse(a.publishedAt) || 0)
   );
 
-  // 先将RSS新闻写入数据库，原有新闻不会被覆盖
+  // 保存RSS新闻，原有新闻不会被覆盖
   let databaseSaved = 0;
   let databaseError = null;
 
@@ -671,7 +771,7 @@ export async function onRequest(context) {
     }, 500);
   }
 
-  // 查询当天已经精选的新闻，防止重复入选
+  // 查询当天已精选的新闻
   const today = getBeijingDate();
   const dailyLimit = 20;
   const selectedIds = new Set();
@@ -682,6 +782,7 @@ export async function onRequest(context) {
       FROM playerbuzz_items
       WHERE ai_selected = 1
         AND selection_date = ?
+        AND review_status != 'rejected'
     `).bind(today).all();
 
     for (const row of selectedResult.results || []) {
@@ -695,10 +796,9 @@ export async function onRequest(context) {
   let selectionError = null;
   let selectedToday = selectedIds.size;
 
-  // 每天最多20条；已有精选不重复挑选
   const remaining = Math.max(0, dailyLimit - selectedToday);
 
-  if (remaining > 0 && selectedIds.size < dailyLimit) {
+  if (remaining > 0) {
     try {
       const candidates = [];
 
@@ -713,7 +813,11 @@ export async function onRequest(context) {
           WHERE id = ?
         `).bind(String(item.id)).first();
 
-        if (!existing || existing.review_status === "rejected") {
+        if (!existing || existing.review_status !== "pending") {
+          continue;
+        }
+
+        if (!isPotentialOffCourtNews(item)) {
           continue;
         }
 
@@ -755,7 +859,7 @@ export async function onRequest(context) {
 
   selectedToday = selectedIds.size;
 
-  // 精选新闻优先翻译，确保精选内容尽量具备中文标题和摘要
+  // 精选新闻优先翻译
   const orderedItems = [...finalItems].sort((a, b) => {
     const aSelected = selectedIds.has(String(a.id)) ? 1 : 0;
     const bSelected = selectedIds.has(String(b.id)) ? 1 : 0;
@@ -873,6 +977,7 @@ export async function onRequest(context) {
       FROM playerbuzz_items
       WHERE ai_selected = 1
         AND selection_date = ?
+        AND review_status != 'rejected'
       ORDER BY COALESCE(published_at, created_at) DESC
       LIMIT 20
     `).bind(today).all();
