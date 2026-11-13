@@ -6,9 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>B-BALL AI 翻译测试</title>
   <style>
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -19,7 +17,7 @@
     }
 
     .container {
-      max-width: 650px;
+      max-width: 700px;
       margin: 30px auto;
       padding: 25px;
       background: white;
@@ -27,9 +25,7 @@
       box-shadow: 0 5px 25px rgba(0,0,0,.05);
     }
 
-    h2 {
-      margin-top: 0;
-    }
+    h2 { margin-top: 0; }
 
     .desc {
       color: #8793a2;
@@ -69,13 +65,10 @@
       cursor: pointer;
     }
 
-    button:disabled {
-      opacity: .6;
-      cursor: wait;
-    }
+    button:disabled { opacity: .6; }
 
     .result {
-      margin-top: 22px;
+      margin-top: 12px;
       padding: 16px;
       min-height: 70px;
       border-radius: 8px;
@@ -90,24 +83,29 @@
       color: #8290a1;
       font-size: 13px;
     }
+
+    .raw {
+      font-size: 12px;
+      font-family: Consolas, monospace;
+      max-height: 450px;
+      overflow: auto;
+    }
   </style>
 </head>
 
 <body>
   <div class="container">
     <h2>B-BALL AI 翻译测试</h2>
+
     <div class="desc">
       使用 Cloudflare Workers AI 测试 NBA 英文新闻翻译。
-      管理员密码仅在本次页面使用，不会保存。
+      管理员密码不会保存。
     </div>
 
     <label>管理员密码</label>
-    <input
-      id="password"
-      type="password"
-      placeholder="输入 Cloudflare 中设置的管理员密码"
-      autocomplete="off"
-    >
+    <input id="password" type="password"
+      placeholder="输入 Cloudflare 管理员密码"
+      autocomplete="off">
 
     <label>英文测试内容</label>
     <textarea id="source">LeBron James scored 30 points and added 8 assists in the Lakers' victory last night.</textarea>
@@ -120,6 +118,9 @@
 
     <label>中文翻译结果</label>
     <div class="result" id="result">翻译结果将在这里显示。</div>
+
+    <label>AI 原始返回数据（排查用）</label>
+    <div class="result raw" id="rawResult">等待 AI 返回数据。</div>
   </div>
 
   <script>
@@ -129,6 +130,7 @@
       const button = document.getElementById("translateBtn");
       const status = document.getElementById("status");
       const resultBox = document.getElementById("result");
+      const rawBox = document.getElementById("rawResult");
 
       if (!password) {
         alert("请先输入管理员密码");
@@ -144,6 +146,7 @@
       button.textContent = "AI 正在翻译...";
       status.textContent = "正在连接 Cloudflare AI...";
       resultBox.textContent = "";
+      rawBox.textContent = "等待返回数据...";
 
       try {
         const response = await fetch("/playerbuzz/ai-test", {
@@ -152,23 +155,34 @@
             "Content-Type": "application/json",
             "X-Admin-Password": password
           },
-          body: JSON.stringify({
-            text: source
-          })
+          body: JSON.stringify({ text: source })
         });
 
         const data = await response.json();
 
         if (!response.ok || !data.success) {
-          throw new Error(data.message || "翻译请求失败");
+          resultBox.textContent = data.message || "翻译请求失败";
+
+          rawBox.textContent = JSON.stringify(
+            data.rawResult !== undefined
+              ? data.rawResult
+              : data,
+            null,
+            2
+          );
+
+          status.textContent = "请求失败，已显示返回数据";
+          return;
         }
 
         resultBox.textContent = data.translatedText;
+        rawBox.textContent = JSON.stringify(data, null, 2);
         status.textContent = "翻译成功 · 模型：" + data.model;
 
       } catch (error) {
-        resultBox.textContent = "测试失败：" + error.message;
-        status.textContent = "请检查密码、接口或 AI 配置";
+        resultBox.textContent = "网页请求失败：" + error.message;
+        rawBox.textContent = error.stack || error.message;
+        status.textContent = "请求发生异常";
       } finally {
         button.disabled = false;
         button.textContent = "开始翻译";
@@ -177,4 +191,3 @@
   </script>
 </body>
 </html>
-
