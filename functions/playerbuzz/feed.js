@@ -1,3 +1,4 @@
+
 export async function onRequest(context) {
   const cors = {
     "Access-Control-Allow-Origin": "*",
@@ -57,6 +58,22 @@ export async function onRequest(context) {
     return match ? cleanText(match[1]) : "";
   }
 
+  function getBeijingDate() {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date());
+
+    const values = {};
+    for (const part of parts) {
+      values[part.type] = part.value;
+    }
+
+    return values.year + "-" + values.month + "-" + values.day;
+  }
+
   // 常见NBA球员英文姓名保护名单
   const playerNames = [
     "LeBron James", "Stephen Curry", "Kevin Durant", "Nikola Jokic",
@@ -105,12 +122,15 @@ export async function onRequest(context) {
     }
 
     const entries = [];
+
     for (const player of found) {
       entries.push(player.original);
+
       if (player.surname.length > 2) {
         const surnamePattern = new RegExp(
           "\\b" + escapeRegExp(player.surname) + "\\b", "i"
         );
+
         if (surnamePattern.test(combined)) {
           entries.push(player.surname);
         }
@@ -123,20 +143,26 @@ export async function onRequest(context) {
 
     function maskText(text) {
       let result = text;
+
       for (const name of uniqueNames) {
         const pattern = new RegExp("\\b" + escapeRegExp(name) + "\\b", "gi");
+
         result = result.replace(pattern, matched => {
           const existing = replacements.find(
             item => item.original.toLowerCase() === matched.toLowerCase()
           );
+
           if (existing) return existing.token;
 
           const token = "BBALLPLAYER" + index + "TOKEN";
           index++;
+
           replacements.push({ token, original: matched });
+
           return token;
         });
       }
+
       return result;
     }
 
@@ -149,22 +175,31 @@ export async function onRequest(context) {
 
   function restorePlayerNames(text, replacements) {
     let result = String(text);
+
     for (const item of replacements) {
       result = result.split(item.token).join(item.original);
     }
+
     return result;
   }
 
-  function parseTranslation(rawText) {
-    const cleaned = String(rawText)
+  function parseAIJson(rawText) {
+    let cleaned = String(rawText)
       .replace(/^```(?:json)?\s*/i, "")
       .replace(/\s*```$/i, "")
       .trim();
 
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+    }
+
     try {
       return JSON.parse(cleaned);
     } catch (error) {
-      throw new Error("AI返回内容不是有效JSON：" + cleaned.slice(0, 120));
+      throw new Error("AI返回内容不是有效JSON：" + cleaned.slice(0, 150));
     }
   }
 
@@ -234,7 +269,8 @@ export async function onRequest(context) {
       if (typeof rawText !== "string" || !rawText.trim()) {
         throw new Error("AI没有返回翻译内容");
       }
-      return parseTranslation(rawText);
+
+      return parseAIJson(rawText);
     }
 
     let lastError = null;
@@ -269,6 +305,7 @@ export async function onRequest(context) {
           translated.title,
           protectedText.replacements
         );
+
         const finalSummary = restorePlayerNames(
           translated.summary,
           protectedText.replacements
@@ -297,6 +334,123 @@ export async function onRequest(context) {
     throw lastError || new Error("AI翻译失败");
   }
 
+  // AI每日精选：从RSS新闻中选出最多20条高价值场外新闻
+  async function selectDailyNews(candidates, remaining) {
+    if (!context.env.AI) {
+      throw new Error("没有找到 AI 绑定");
+    }
+
+    if (!candidates.length || remaining <= 0) {
+      return [];
+    }
+
+    const limitedCandidates = candidates.slice(0, 60);
+
+    const compactCandidates = limitedCandidates.map((item, index) => ({
+      index,
+      title: String(item.title || "").slice(0, 220),
+      description: String(item.content || "").slice(0, 450),
+      source: item.source
+    }));
+
+    const systemPrompt = `你是专业的NBA球员场外新闻主编，负责为NBA球迷筛选每日值得阅读的球员八卦新闻。
+
+你的任务不是选择普通NBA比赛新闻，而是从候选新闻中挑选最有话题性、最值得球迷关注的内容。
+
+优先选择：
+1. NBA球员的场外生活、家庭、感情、个人生活动态。
+2. 球员社交媒体发布、互动、回应、争议和热门话题。
+3. 球员之间的趣闻、冲突、关系变化、公开言论。
+4. 球员商业活动、个人品牌、收藏、兴趣爱好和生活方式。
+5. 球员重要的场外事件、公众讨论和有新闻价值的突发动态。
+6. 球星具有传播价值的独特故事。
+
+严格排除：
+1. 普通比赛战报、赛前预告、赛后比分。
+2. 普通得分、篮板、助攻等比赛统计。
+3. 单纯的比赛表现评价。
+4. 没有具体话题的常规球队新闻。
+5. 重复、相似或只是改写同一事件的新闻。
+6. 内容过短、信息不完整、无法判断具体事件的新闻。
+7. 仅仅因为球员知名就入选，但新闻本身没有话题性的内容。
+
+筛选原则：
+- 质量优先，不需要凑足数量。
+- 最多选择指定数量。
+- 尽量选择不同球员、不同事件。
+- 同一事件只能选一条。
+- 不能根据标题猜测原文没有的信息。
+- 不得编造新闻。
+- 只返回候选新闻原有的 index 数字。
+- 如果没有合适新闻，返回空数组。
+
+必须只返回合法JSON，不要输出解释或Markdown。
+
+返回格式：
+{"selected":[0,2,5]}`;
+
+    const userPrompt = JSON.stringify({
+      requiredMaximum: remaining,
+      candidates: compactCandidates
+    });
+
+    const result = await context.env.AI.run(
+      "@cf/zai-org/glm-4.7-flash",
+      {
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt
+          },
+          {
+            role: "user",
+            content: userPrompt
+          }
+        ],
+        chat_template_kwargs: {
+          enable_thinking: false,
+          clear_thinking: true
+        },
+        max_completion_tokens: 1200,
+        temperature: 0.1
+      }
+    );
+
+    const message = result?.choices?.[0]?.message;
+    const rawText = message?.content || result?.response || result?.output_text || "";
+
+    if (typeof rawText !== "string" || !rawText.trim()) {
+      throw new Error("AI没有返回精选结果");
+    }
+
+    const parsed = parseAIJson(rawText);
+
+    if (!Array.isArray(parsed.selected)) {
+      throw new Error("AI精选结果格式不正确");
+    }
+
+    const indexes = [];
+    const seen = new Set();
+
+    for (const value of parsed.selected) {
+      const index = Number(value);
+
+      if (
+        Number.isInteger(index) &&
+        index >= 0 &&
+        index < limitedCandidates.length &&
+        !seen.has(index)
+      ) {
+        seen.add(index);
+        indexes.push(index);
+      }
+    }
+
+    return indexes
+      .slice(0, remaining)
+      .map(index => limitedCandidates[index]);
+  }
+
   const feeds = [
     {
       name: "ESPN",
@@ -319,13 +473,18 @@ export async function onRequest(context) {
   ];
 
   const db = context.env.DB;
+
   if (!db) {
-    return json({ success: false, message: "没有找到 DB 数据库绑定" }, 500);
+    return json({
+      success: false,
+      message: "没有找到 DB 数据库绑定"
+    }, 500);
   }
 
-  // 修复模式：只重新翻译待审核新闻，不采集新内容
+  // 历史修复模式：只重新翻译待审核新闻，不采集新内容
   if (repairMode) {
     let rows;
+
     try {
       const result = await db.prepare(`
         SELECT id, original_title, original_content
@@ -373,7 +532,8 @@ export async function onRequest(context) {
       } catch (error) {
         failed++;
         errors.push(
-          (row.original_title || row.id) + "：" + (error.message || "翻译失败")
+          (row.original_title || row.id) + "：" +
+          (error.message || "翻译失败")
         );
       }
     }
@@ -402,7 +562,9 @@ export async function onRequest(context) {
       });
 
       if (!response.ok) {
-        throw new Error(config.name + " RSS 请求失败：" + response.status);
+        throw new Error(
+          config.name + " RSS 请求失败：" + response.status
+        );
       }
 
       const xml = await response.text();
@@ -422,7 +584,7 @@ export async function onRequest(context) {
           category: config.category,
           publishedAt: getTag(item, "pubDate")
         };
-      }).filter(item => item.title);
+      }).filter(item => item.title && item.id);
     })
   );
 
@@ -433,13 +595,15 @@ export async function onRequest(context) {
   results.forEach((result, index) => {
     if (result.status === "fulfilled") {
       items.push(...result.value);
+
       successfulSources.push({
         name: feeds[index].name,
         count: result.value.length
       });
     } else {
       errors.push(
-        feeds[index].name + "：" + (result.reason?.message || "请求失败")
+        feeds[index].name + "：" +
+        (result.reason?.message || "请求失败")
       );
     }
   });
@@ -449,6 +613,7 @@ export async function onRequest(context) {
 
   for (const item of items) {
     const key = item.id || item.title;
+
     if (!seen.has(key)) {
       seen.add(key);
       finalItems.push(item);
@@ -456,24 +621,16 @@ export async function onRequest(context) {
   }
 
   finalItems.sort((a, b) =>
-    (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0)
+    (Date.parse(b.publishedAt) || 0) -
+    (Date.parse(a.publishedAt) || 0)
   );
 
+  // 先将RSS新闻写入数据库，原有新闻不会被覆盖
   let databaseSaved = 0;
-  let translatedCount = 0;
-  let alreadyTranslated = 0;
-  let translationPending = 0;
-  let translationFailed = 0;
   let databaseError = null;
 
-  const translationLimit = 10;
-
   try {
-    let processed = 0;
-
     for (const item of finalItems) {
-      const itemId = String(item.id);
-
       const insertResult = await db.prepare(`
         INSERT OR IGNORE INTO playerbuzz_items (
           id, source, source_link, original_title, original_content,
@@ -481,7 +638,7 @@ export async function onRequest(context) {
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
       `).bind(
-        itemId,
+        String(item.id),
         item.source,
         item.sourceLink || "",
         item.title,
@@ -491,6 +648,132 @@ export async function onRequest(context) {
       ).run();
 
       databaseSaved += insertResult.meta?.changes || 0;
+    }
+  } catch (error) {
+    databaseError = error.message || "数据库保存失败";
+    errors.push("D1数据库：" + databaseError);
+  }
+
+  if (databaseError) {
+    return json({
+      success: false,
+      service: "B-BALL Player Buzz",
+      message: "新闻采集完成，但数据库保存发生错误",
+      dataSource: feeds.map(feed => feed.name),
+      successfulSources,
+      total: finalItems.length,
+      database: {
+        connected: false,
+        saved: databaseSaved,
+        error: databaseError
+      },
+      errors
+    }, 500);
+  }
+
+  // 查询当天已经精选的新闻，防止重复入选
+  const today = getBeijingDate();
+  const dailyLimit = 20;
+  const selectedIds = new Set();
+
+  try {
+    const selectedResult = await db.prepare(`
+      SELECT id
+      FROM playerbuzz_items
+      WHERE ai_selected = 1
+        AND selection_date = ?
+    `).bind(today).all();
+
+    for (const row of selectedResult.results || []) {
+      selectedIds.add(String(row.id));
+    }
+  } catch (error) {
+    errors.push("读取今日精选记录失败：" + error.message);
+  }
+
+  let newlySelected = 0;
+  let selectionError = null;
+  let selectedToday = selectedIds.size;
+
+  // 每天最多20条；已有精选不重复挑选
+  const remaining = Math.max(0, dailyLimit - selectedToday);
+
+  if (remaining > 0 && selectedIds.size < dailyLimit) {
+    try {
+      const candidates = [];
+
+      for (const item of finalItems) {
+        if (selectedIds.has(String(item.id))) {
+          continue;
+        }
+
+        const existing = await db.prepare(`
+          SELECT review_status
+          FROM playerbuzz_items
+          WHERE id = ?
+        `).bind(String(item.id)).first();
+
+        if (!existing || existing.review_status === "rejected") {
+          continue;
+        }
+
+        candidates.push(item);
+      }
+
+      const selectedItems = await selectDailyNews(
+        candidates,
+        remaining
+      );
+
+      for (const item of selectedItems) {
+        const result = await db.prepare(`
+          UPDATE playerbuzz_items
+          SET
+            ai_selected = 1,
+            selection_date = ?,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+            AND ai_selected = 0
+            AND review_status = 'pending'
+        `).bind(
+          today,
+          String(item.id)
+        ).run();
+
+        const changes = result.meta?.changes || 0;
+
+        if (changes > 0) {
+          newlySelected++;
+          selectedIds.add(String(item.id));
+        }
+      }
+    } catch (error) {
+      selectionError = error.message || "AI精选失败";
+      errors.push("AI每日精选：" + selectionError);
+    }
+  }
+
+  selectedToday = selectedIds.size;
+
+  // 精选新闻优先翻译，确保精选内容尽量具备中文标题和摘要
+  const orderedItems = [...finalItems].sort((a, b) => {
+    const aSelected = selectedIds.has(String(a.id)) ? 1 : 0;
+    const bSelected = selectedIds.has(String(b.id)) ? 1 : 0;
+
+    return bSelected - aSelected;
+  });
+
+  let translatedCount = 0;
+  let alreadyTranslated = 0;
+  let translationPending = 0;
+  let translationFailed = 0;
+
+  const translationLimit = 20;
+  let processed = 0;
+
+  try {
+    for (const item of orderedItems) {
+      const itemId = String(item.id);
 
       const existing = await db.prepare(`
         SELECT chinese_title, chinese_content
@@ -505,14 +788,17 @@ export async function onRequest(context) {
 
       const oldTitle = existing.chinese_title || "";
       const oldContent = existing.chinese_content || "";
+
       const titleIsChinese = hasChinese(oldTitle);
       const contentIsChinese = hasChinese(oldContent);
 
       if (titleIsChinese && contentIsChinese) {
         alreadyTranslated++;
+
         item.chineseTitle = oldTitle;
         item.chineseContent = oldContent;
         item.translationStatus = "translated";
+
         continue;
       }
 
@@ -552,19 +838,48 @@ export async function onRequest(context) {
         item.chineseTitle = saved?.chinese_title || "";
         item.chineseContent = saved?.chinese_content || "";
         item.translationStatus = "translated";
+
         translatedCount++;
       } catch (error) {
         translationFailed++;
         translationPending++;
         item.translationStatus = "failed";
+
         errors.push(
-          "AI翻译失败：" + item.title + "：" + (error.message || "未知错误")
+          "AI翻译失败：" + item.title + "：" +
+          (error.message || "未知错误")
         );
       }
     }
   } catch (error) {
-    databaseError = error.message || "数据库保存失败";
-    errors.push("D1数据库：" + databaseError);
+    errors.push("新闻翻译流程异常：" + error.message);
+  }
+
+  // 返回今日精选新闻列表
+  let todayFeatured = [];
+
+  try {
+    const featuredResult = await db.prepare(`
+      SELECT
+        id,
+        source,
+        original_title,
+        chinese_title,
+        chinese_content,
+        player_name,
+        category,
+        published_at,
+        review_status
+      FROM playerbuzz_items
+      WHERE ai_selected = 1
+        AND selection_date = ?
+      ORDER BY COALESCE(published_at, created_at) DESC
+      LIMIT 20
+    `).bind(today).all();
+
+    todayFeatured = featuredResult.results || [];
+  } catch (error) {
+    errors.push("读取今日精选列表失败：" + error.message);
   }
 
   return json({
@@ -574,9 +889,18 @@ export async function onRequest(context) {
     successfulSources,
     total: finalItems.length,
     database: {
-      connected: !databaseError,
+      connected: true,
       saved: databaseSaved,
-      error: databaseError
+      error: null
+    },
+    dailySelection: {
+      date: today,
+      mode: "AI精选",
+      dailyLimit,
+      selectedToday: todayFeatured.length,
+      newlySelected,
+      remaining: Math.max(0, dailyLimit - todayFeatured.length),
+      selectionError
     },
     translation: {
       model: "@cf/zai-org/glm-4.7-flash",
@@ -587,6 +911,7 @@ export async function onRequest(context) {
       limitPerRequest: translationLimit
     },
     pendingReview: finalItems.length,
+    featuredItems: todayFeatured,
     errors,
     items: finalItems
   }, finalItems.length > 0 ? 200 : 502);
