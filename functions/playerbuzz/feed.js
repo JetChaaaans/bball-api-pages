@@ -11,7 +11,10 @@ export async function onRequest(context) {
   }
 
   if (context.request.method !== "GET") {
-    return json({ success: false, message: "只支持 GET 请求" }, 405, cors);
+    return json({
+      success: false,
+      message: "只支持 GET 请求"
+    }, 405, cors);
   }
 
   function cleanText(value = "") {
@@ -23,6 +26,12 @@ export async function onRequest(context) {
       .replace(/&gt;/g, ">")
       .replace(/&quot;/g, '"')
       .replace(/&#39;|&apos;/g, "'")
+      .replace(/&#(\d+);/g, (_, n) =>
+        String.fromCodePoint(Number(n))
+      )
+      .replace(/&#x([0-9a-f]+);/gi, (_, n) =>
+        String.fromCodePoint(parseInt(n, 16))
+      )
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -31,17 +40,21 @@ export async function onRequest(context) {
     const match = xml.match(
       new RegExp("<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)</" + tag + ">", "i")
     );
+
     return match ? cleanText(match[1]) : "";
   }
 
   async function getEspnNews() {
-    const response = await fetch(
-      "https://www.espn.com/espn/rss/nba/news",
-      { headers: { "User-Agent": "B-BALL-News-Reader/1.0" } }
-    );
+    const url = "https://www.espn.com/espn/rss/nba/news";
+
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "B-BALL-News-Reader/1.0"
+      }
+    });
 
     if (!response.ok) {
-      throw new Error("ESPN 请求失败：" + response.status);
+      throw new Error("ESPN RSS 请求失败：" + response.status);
     }
 
     const xml = await response.text();
@@ -54,62 +67,48 @@ export async function onRequest(context) {
       title: getTag(item, "title"),
       content: getTag(item, "description"),
       source: "ESPN",
+      sourceLink: getTag(item, "link"),
       publishedAt: getTag(item, "pubDate"),
       reviewStatus: "pending"
     })).filter(item => item.title);
   }
 
+  // 改用 api.bsky.app 测试免费公开搜索接口
   async function getBlueskyPosts() {
-    const hosts = [
-      "https://api.bsky.app",
-      "https://public.api.bsky.app"
-    ];
+    const url = new URL(
+      "https://api.bsky.app/xrpc/app.bsky.feed.searchPosts"
+    );
 
-    let lastError = "";
+    url.searchParams.set("q", "NBA");
+    url.searchParams.set("sort", "latest");
+    url.searchParams.set("limit", "30");
 
-    for (const host of hosts) {
-      try {
-        const url = new URL(
-          host + "/xrpc/app.bsky.feed.searchPosts"
-        );
-
-        url.searchParams.set("q", "NBA");
-        url.searchParams.set("sort", "latest");
-        url.searchParams.set("limit", "30");
-
-        const response = await fetch(url.toString(), {
-          headers: {
-            "Accept": "application/json",
-            "User-Agent": "B-BALL-News-Reader/1.0"
-          }
-        });
-
-        if (!response.ok) {
-          lastError = host + " 返回 " + response.status;
-          continue;
-        }
-
-        const data = await response.json();
-
-        return (data.posts || []).map(post => ({
-          id: post.uri,
-          type: "social",
-          category: "社交平台动态",
-          title: post.author?.displayName ||
-            post.author?.handle || "未知用户",
-          content: post.record?.text || "",
-          author: post.author?.handle || "",
-          source: "Bluesky",
-          publishedAt: post.record?.createdAt ||
-            post.indexedAt || "",
-          reviewStatus: "pending"
-        })).filter(item => item.content);
-      } catch (error) {
-        lastError = error.message;
+    const response = await fetch(url.toString(), {
+      headers: {
+        "Accept": "application/json",
+        "User-Agent": "B-BALL-News-Reader/1.0"
       }
+    });
+
+    if (!response.ok) {
+      throw new Error("Bluesky 请求失败：" + response.status);
     }
 
-    throw new Error("两个公开接口均无法访问：" + lastError);
+    const data = await response.json();
+
+    return (data.posts || []).map(post => ({
+      id: post.uri,
+      type: "social",
+      category: "社交平台动态",
+      title: post.author?.displayName ||
+        post.author?.handle || "未知用户",
+      content: post.record?.text || "",
+      author: post.author?.handle || "",
+      source: "Bluesky",
+      sourceLink: "",
+      publishedAt: post.record?.createdAt || post.indexedAt || "",
+      reviewStatus: "pending"
+    })).filter(item => item.content);
   }
 
   const results = await Promise.allSettled([
