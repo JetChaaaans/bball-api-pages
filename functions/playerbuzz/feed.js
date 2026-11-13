@@ -1,4 +1,3 @@
-
 export async function onRequest(context) {
   const cors = {
     "Access-Control-Allow-Origin": "*",
@@ -22,11 +21,11 @@ export async function onRequest(context) {
   }
 
   if (context.request.method !== "GET") {
-    return json({
-      success: false,
-      message: "只支持 GET 请求"
-    }, 405);
+    return json({ success: false, message: "只支持 GET 请求" }, 405);
   }
+
+  const url = new URL(context.request.url);
+  const repairMode = url.searchParams.get("repair") === "1";
 
   function cleanText(value = "") {
     return String(value)
@@ -37,12 +36,8 @@ export async function onRequest(context) {
       .replace(/&gt;/g, ">")
       .replace(/&quot;/g, '"')
       .replace(/&#39;|&apos;/g, "'")
-      .replace(/&#(\d+);/g, (_, n) =>
-        String.fromCodePoint(Number(n))
-      )
-      .replace(/&#x([0-9a-f]+);/gi, (_, n) =>
-        String.fromCodePoint(parseInt(n, 16))
-      )
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+      .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -51,201 +46,97 @@ export async function onRequest(context) {
     return /[\u3400-\u4dbf\u4e00-\u9fff]/.test(String(value));
   }
 
-  function getTag(xml, tag) {
-    const match = xml.match(
-      new RegExp(
-        "<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)</" + tag + ">",
-        "i"
-      )
-    );
-
-    return match ? cleanText(match[1]) : "";
-  }
-
   function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
+  function getTag(xml, tag) {
+    const match = xml.match(
+      new RegExp("<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)</" + tag + ">", "i")
+    );
+    return match ? cleanText(match[1]) : "";
+  }
+
   // 常见NBA球员英文姓名保护名单
   const playerNames = [
-    "LeBron James",
-    "Stephen Curry",
-    "Kevin Durant",
-    "Nikola Jokic",
-    "Luka Doncic",
-    "Giannis Antetokounmpo",
-    "Victor Wembanyama",
-    "Joel Embiid",
-    "Jayson Tatum",
-    "Jaylen Brown",
-    "Anthony Edwards",
-    "Shai Gilgeous-Alexander",
-    "Jalen Brunson",
-    "Donovan Mitchell",
-    "Devin Booker",
-    "Cade Cunningham",
-    "Tyrese Haliburton",
-    "Anthony Davis",
-    "James Harden",
-    "Kyrie Irving",
-    "Kawhi Leonard",
-    "Paul George",
-    "Damian Lillard",
-    "Trae Young",
-    "Ja Morant",
-    "Zion Williamson",
-    "Austin Reaves",
-    "Marcus Smart",
-    "Charles Bassey",
-    "Malcolm Brogdon",
-    "Coby White",
-    "VJ Edgecombe",
-    "Jamison Battle",
-    "Collin Murray-Boyles",
-    "Caleb Wilson",
-    "AJ Dybantsa",
-    "Yaxel Lendeborg",
-    "Kristaps Porzingis",
-    "Mikal Bridges",
-    "Tyler Herro",
-    "Bam Adebayo",
-    "Evan Mobley",
-    "Darius Garland",
-    "Donte DiVincenzo",
-    "Karl-Anthony Towns",
-    "Julius Randle",
-    "Jaren Jackson Jr.",
-    "Desmond Bane",
-    "Lauri Markkanen",
-    "De'Aaron Fox",
-    "Domantas Sabonis",
-    "Draymond Green",
-    "Jimmy Butler",
-    "Klay Thompson",
-    "Khris Middleton",
-    "Brook Lopez",
-    "Chet Holmgren",
-    "Jalen Williams",
-    "Alperen Sengun",
-    "Fred VanVleet",
-    "Amen Thompson",
-    "Ausar Thompson",
-    "Paolo Banchero",
-    "Franz Wagner",
-    "LaMelo Ball",
-    "Brandon Miller",
-    "Scottie Barnes",
-    "RJ Barrett",
-    "Immanuel Quickley",
-    "Tyrese Maxey",
-    "Paul Reed",
-    "Derrick White",
-    "Jrue Holiday",
-    "Kristaps Porzingis",
-    "Deandre Ayton",
-    "DeMar DeRozan",
-    "Zach LaVine",
-    "Nikola Vucevic",
-    "Josh Giddey",
-    "Michael Porter Jr.",
-    "Aaron Gordon",
-    "Jamal Murray",
-    "Russell Westbrook",
-    "Bradley Beal",
-    "Devin Vassell",
-    "Stephon Castle",
-    "Chris Paul",
-    "Harrison Barnes",
-    "LaMelo Ball",
-    "Terry Rozier",
-    "Tyler Herro",
-    "Duncan Robinson",
-    "Jalen Green",
-    "Dillon Brooks",
-    "Tari Eason",
-    "Reed Sheppard",
-    "Cooper Flagg",
-    "Kon Knueppel",
-    "Dylan Harper",
-    "Ace Bailey",
-    "Derik Queen",
-    "Nolan Traore"
+    "LeBron James", "Stephen Curry", "Kevin Durant", "Nikola Jokic",
+    "Luka Doncic", "Giannis Antetokounmpo", "Victor Wembanyama",
+    "Joel Embiid", "Jayson Tatum", "Jaylen Brown", "Anthony Edwards",
+    "Shai Gilgeous-Alexander", "Jalen Brunson", "Donovan Mitchell",
+    "Devin Booker", "Cade Cunningham", "Tyrese Haliburton",
+    "Anthony Davis", "James Harden", "Kyrie Irving", "Kawhi Leonard",
+    "Paul George", "Damian Lillard", "Trae Young", "Ja Morant",
+    "Zion Williamson", "Austin Reaves", "Marcus Smart", "Charles Bassey",
+    "Malcolm Brogdon", "Coby White", "VJ Edgecombe", "Jamison Battle",
+    "Collin Murray-Boyles", "Caleb Wilson", "AJ Dybantsa",
+    "Yaxel Lendeborg", "Kristaps Porzingis", "Mikal Bridges",
+    "Tyler Herro", "Bam Adebayo", "Evan Mobley", "Darius Garland",
+    "Donte DiVincenzo", "Karl-Anthony Towns", "Julius Randle",
+    "Jaren Jackson Jr.", "Desmond Bane", "Lauri Markkanen",
+    "De'Aaron Fox", "Domantas Sabonis", "Draymond Green",
+    "Jimmy Butler", "Klay Thompson", "Khris Middleton", "Brook Lopez",
+    "Chet Holmgren", "Jalen Williams", "Alperen Sengun",
+    "Fred VanVleet", "Amen Thompson", "Ausar Thompson",
+    "Paolo Banchero", "Franz Wagner", "LaMelo Ball",
+    "Brandon Miller", "Scottie Barnes", "RJ Barrett",
+    "Immanuel Quickley", "Tyrese Maxey", "Paul Reed", "Derrick White",
+    "Jrue Holiday", "Deandre Ayton", "DeMar DeRozan", "Zach LaVine",
+    "Nikola Vucevic", "Josh Giddey", "Michael Porter Jr.",
+    "Aaron Gordon", "Jamal Murray", "Russell Westbrook",
+    "Bradley Beal", "Devin Vassell", "Stephon Castle", "Chris Paul",
+    "Harrison Barnes", "Terry Rozier", "Duncan Robinson",
+    "Jalen Green", "Dillon Brooks", "Tari Eason", "Reed Sheppard",
+    "Cooper Flagg", "Kon Knueppel", "Dylan Harper", "Ace Bailey",
+    "Derik Queen", "Nolan Traore"
   ];
 
-  // 保护原文中出现的球员姓名和对应姓氏
   function protectPlayerNames(title, content) {
     const combined = title + " " + content;
     const found = [];
 
     for (const fullName of playerNames) {
-      const pattern = new RegExp(
-        "\\b" + escapeRegExp(fullName) + "\\b",
-        "i"
-      );
-
+      const pattern = new RegExp("\\b" + escapeRegExp(fullName) + "\\b", "i");
       if (pattern.test(combined)) {
         found.push({
           original: fullName,
-          alias: fullName.split(/\s+/).pop()
+          surname: fullName.split(/\s+/).pop()
         });
       }
     }
 
-    // 姓氏也需要保护，例如原文标题只写 Smart
-    const protectedEntries = [];
-
+    const entries = [];
     for (const player of found) {
-      protectedEntries.push(player.original);
-
-      const surname = player.alias;
-
-      if (
-        surname.length > 2 &&
-        new RegExp(
-          "\\b" + escapeRegExp(surname) + "\\b",
-          "i"
-        ).test(combined)
-      ) {
-        protectedEntries.push(surname);
+      entries.push(player.original);
+      if (player.surname.length > 2) {
+        const surnamePattern = new RegExp(
+          "\\b" + escapeRegExp(player.surname) + "\\b", "i"
+        );
+        if (surnamePattern.test(combined)) {
+          entries.push(player.surname);
+        }
       }
     }
 
-    const uniqueNames = [...new Set(protectedEntries)]
-      .sort((a, b) => b.length - a.length);
-
+    const uniqueNames = [...new Set(entries)].sort((a, b) => b.length - a.length);
     const replacements = [];
     let index = 0;
 
     function maskText(text) {
       let result = text;
-
       for (const name of uniqueNames) {
-        const pattern = new RegExp(
-          "\\b" + escapeRegExp(name) + "\\b",
-          "gi"
-        );
-
+        const pattern = new RegExp("\\b" + escapeRegExp(name) + "\\b", "gi");
         result = result.replace(pattern, matched => {
           const existing = replacements.find(
             item => item.original.toLowerCase() === matched.toLowerCase()
           );
-
-          if (existing) {
-            return existing.token;
-          }
+          if (existing) return existing.token;
 
           const token = "BBALLPLAYER" + index + "TOKEN";
           index++;
-
-          replacements.push({
-            token,
-            original: matched
-          });
-
+          replacements.push({ token, original: matched });
           return token;
         });
       }
-
       return result;
     }
 
@@ -258,16 +149,14 @@ export async function onRequest(context) {
 
   function restorePlayerNames(text, replacements) {
     let result = String(text);
-
     for (const item of replacements) {
       result = result.split(item.token).join(item.original);
     }
-
     return result;
   }
 
   function parseTranslation(rawText) {
-    const cleaned = rawText
+    const cleaned = String(rawText)
       .replace(/^```(?:json)?\s*/i, "")
       .replace(/\s*```$/i, "")
       .trim();
@@ -275,74 +164,8 @@ export async function onRequest(context) {
     try {
       return JSON.parse(cleaned);
     } catch (error) {
-      const titleMatch = cleaned.match(
-        /"title"\s*:\s*"((?:\\.|[^"\\])*)"/
-      );
-
-      const summaryMatch = cleaned.match(
-        /"summary"\s*:\s*(?:"((?:\\.|[^"\\])*)"|([\s\S]*?))\s*\}\s*$/
-      );
-
-      if (titleMatch && summaryMatch) {
-        const title = JSON.parse('"' + titleMatch[1] + '"');
-
-        let summary = summaryMatch[1];
-
-        if (summary === undefined) {
-          summary = summaryMatch[2] || "";
-        } else {
-          summary = JSON.parse('"' + summary + '"');
-        }
-
-        summary = String(summary)
-          .replace(/,\s*$/, "")
-          .trim();
-
-        if (title && summary) {
-          return { title, summary };
-        }
-      }
-
-      throw new Error(
-        "AI返回内容不是有效JSON：" + cleaned.slice(0, 150)
-      );
+      throw new Error("AI返回内容不是有效JSON：" + cleaned.slice(0, 120));
     }
-  }
-
-  async function getRssNews(config) {
-    const response = await fetch(config.url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 B-BALL-News-Reader/1.0",
-        "Accept": "application/rss+xml, application/xml, text/xml"
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(
-        config.name + " RSS 请求失败：" + response.status
-      );
-    }
-
-    const xml = await response.text();
-    const entries = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) || [];
-
-    return entries.slice(0, config.limit).map(item => {
-      const link = getTag(item, "link");
-      const guid = getTag(item, "guid");
-      const title = getTag(item, "title");
-
-      return {
-        id: guid || link || title,
-        type: "news",
-        category: config.category,
-        title,
-        content: getTag(item, "description"),
-        source: config.name,
-        sourceLink: link,
-        publishedAt: getTag(item, "pubDate"),
-        reviewStatus: "pending"
-      };
-    }).filter(item => item.title);
   }
 
   async function translateNews(item) {
@@ -351,8 +174,8 @@ export async function onRequest(context) {
     }
 
     const protectedText = protectPlayerNames(
-      item.title.slice(0, 300),
-      item.content.slice(0, 700)
+      String(item.title || "").slice(0, 300),
+      String(item.content || "").slice(0, 700)
     );
 
     const sourceText = JSON.stringify({
@@ -365,20 +188,21 @@ export async function onRequest(context) {
 将用户提供的英文NBA新闻标题和摘要翻译成准确、自然的简体中文。
 
 必须遵守：
+1. 所有 BBALLPLAYER数字TOKEN 占位符必须原样保留，不能翻译、删除或修改。
+2. 占位符代表NBA球员英文姓名，最终由系统自动还原。
+3. 球员姓名必须保留英文原名，不得翻译或音译。
+4. 不要猜测球员身份，不得把一个球员写成另一个球员。
+5. 球队名称翻译成常见中文名称。
+6. 标题和摘要都必须翻译成中文。
+7. 保留原文比分、数据、日期和比赛事实。
+8. oblique 是腹斜肌，不是腹股沟。
+9. groin 是腹股沟；strain 是拉伤；tear 是撕裂。
+10. 篮球投篮数据顺序必须正确。例如 12-20 FG 应译为20投12中；4-8 3PT 应译为三分8投4中；2-2 FT 应译为罚球2罚2中。
+11. 不得编造原文没有的信息。
+12. 不要输出解释、分析或Markdown。
+13. 必须输出合法JSON，字符串使用英文双引号。
 
-1. 所有 BBALLPLAYER数字TOKEN 格式的占位符必须原样保留，不能翻译、删除、修改或拆开。
-2. 这些占位符代表NBA球员英文姓名，最终会由系统自动还原。
-3. 不要自行猜测球员姓名，不要把一个球员写成另一个球员。
-4. 球队名称翻译成常见中文名称。
-5. 标题和摘要都必须翻译成中文。
-6. 保留原文中的比分、球员数据、日期和比赛事实。
-7. 伤病部位必须准确区分，例如 oblique 是腹斜肌，不是腹股沟。
-8. 不得将 injury、strain、tear 等不同伤病描述随意混用。
-9. 不得编造原文没有的信息。
-10. 不要输出解释、分析或Markdown。
-11. 必须输出合法JSON，字符串必须使用英文双引号。
-
-只允许返回以下结构：
+只允许返回：
 {"title":"中文标题","summary":"中文摘要"}`;
 
     async function requestTranslation(extraInstruction = "") {
@@ -405,28 +229,21 @@ export async function onRequest(context) {
       );
 
       const message = result?.choices?.[0]?.message;
-
-      const rawText =
-        message?.content ||
-        result?.response ||
-        result?.output_text ||
-        "";
+      const rawText = message?.content || result?.response || result?.output_text || "";
 
       if (typeof rawText !== "string" || !rawText.trim()) {
         throw new Error("AI没有返回翻译内容");
       }
-
       return parseTranslation(rawText);
     }
 
     let lastError = null;
 
-    // 最多尝试两次
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const translated = await requestTranslation(
           attempt === 2
-            ? "\n再次提醒：必须保留所有占位符，必须返回语法正确的JSON。检查标题和摘要中的事实与伤病信息。"
+            ? "\n再次检查：球员姓名占位符必须完整保留；篮球数据顺序必须正确；伤病部位必须准确。"
             : ""
         );
 
@@ -439,22 +256,11 @@ export async function onRequest(context) {
           throw new Error("AI返回的标题或摘要格式不正确");
         }
 
-        // 检查所有占位符是否完整保留
         for (const item of protectedText.replacements) {
-          const titleHasToken = translated.title.includes(item.token);
-          const summaryHasToken = translated.summary.includes(item.token);
-
-          const originalTitleHasName = new RegExp(
-            "\\b" + escapeRegExp(item.original) + "\\b",
-            "i"
-          ).test(item.original);
-
           if (
-            !titleHasToken &&
-            !summaryHasToken &&
-            originalTitleHasName
+            !translated.title.includes(item.token) &&
+            !translated.summary.includes(item.token)
           ) {
-            // 如果AI删除占位符，要求重新翻译
             throw new Error("AI遗漏了球员姓名占位符");
           }
         }
@@ -463,7 +269,6 @@ export async function onRequest(context) {
           translated.title,
           protectedText.replacements
         );
-
         const finalSummary = restorePlayerNames(
           translated.summary,
           protectedText.replacements
@@ -473,7 +278,6 @@ export async function onRequest(context) {
           throw new Error("AI返回内容没有包含中文");
         }
 
-        // 检查还原后的内容是否仍包含未还原的占位符
         if (
           /BBALLPLAYER\d+TOKEN/.test(finalTitle) ||
           /BBALLPLAYER\d+TOKEN/.test(finalSummary)
@@ -485,7 +289,6 @@ export async function onRequest(context) {
           title: finalTitle.trim(),
           summary: finalSummary.trim()
         };
-
       } catch (error) {
         lastError = error;
       }
@@ -515,8 +318,112 @@ export async function onRequest(context) {
     }
   ];
 
+  const db = context.env.DB;
+  if (!db) {
+    return json({ success: false, message: "没有找到 DB 数据库绑定" }, 500);
+  }
+
+  // 修复模式：只重新翻译待审核新闻，不采集新内容
+  if (repairMode) {
+    let rows;
+    try {
+      const result = await db.prepare(`
+        SELECT id, original_title, original_content
+        FROM playerbuzz_items
+        WHERE review_status = 'pending'
+        ORDER BY COALESCE(published_at, created_at) DESC
+        LIMIT 10
+      `).all();
+
+      rows = result.results || [];
+    } catch (error) {
+      return json({
+        success: false,
+        message: "读取待审核新闻失败：" + error.message
+      }, 500);
+    }
+
+    let repaired = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const row of rows) {
+      try {
+        const translated = await translateNews({
+          title: row.original_title || "",
+          content: row.original_content || ""
+        });
+
+        const updateResult = await db.prepare(`
+          UPDATE playerbuzz_items
+          SET chinese_title = ?,
+              chinese_content = ?,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+            AND review_status = 'pending'
+        `).bind(
+          translated.title,
+          translated.summary,
+          row.id
+        ).run();
+
+        if ((updateResult.meta?.changes || 0) > 0) {
+          repaired++;
+        }
+      } catch (error) {
+        failed++;
+        errors.push(
+          (row.original_title || row.id) + "：" + (error.message || "翻译失败")
+        );
+      }
+    }
+
+    return json({
+      success: true,
+      mode: "repair",
+      message: "待审核新闻修复完成",
+      selected: rows.length,
+      repaired,
+      failed,
+      limitPerRequest: 10,
+      protectedStatus: "approved",
+      errors
+    });
+  }
+
+  // 正常采集模式
   const results = await Promise.allSettled(
-    feeds.map(feed => getRssNews(feed))
+    feeds.map(async config => {
+      const response = await fetch(config.url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 B-BALL-News-Reader/1.0",
+          "Accept": "application/rss+xml, application/xml, text/xml"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(config.name + " RSS 请求失败：" + response.status);
+      }
+
+      const xml = await response.text();
+      const entries = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) || [];
+
+      return entries.slice(0, config.limit).map(item => {
+        const link = getTag(item, "link");
+        const guid = getTag(item, "guid");
+        const title = getTag(item, "title");
+
+        return {
+          id: guid || link || title,
+          title,
+          content: getTag(item, "description"),
+          source: config.name,
+          sourceLink: link,
+          category: config.category,
+          publishedAt: getTag(item, "pubDate")
+        };
+      }).filter(item => item.title);
+    })
   );
 
   const items = [];
@@ -526,36 +433,31 @@ export async function onRequest(context) {
   results.forEach((result, index) => {
     if (result.status === "fulfilled") {
       items.push(...result.value);
-
       successfulSources.push({
         name: feeds[index].name,
         count: result.value.length
       });
     } else {
       errors.push(
-        feeds[index].name + "：" +
-        (result.reason?.message || "请求失败")
+        feeds[index].name + "：" + (result.reason?.message || "请求失败")
       );
     }
   });
 
-  const finalItems = [];
   const seen = new Set();
+  const finalItems = [];
 
   for (const item of items) {
     const key = item.id || item.title;
-
     if (!seen.has(key)) {
       seen.add(key);
       finalItems.push(item);
     }
   }
 
-  finalItems.sort((a, b) => {
-    const timeA = Date.parse(a.publishedAt) || 0;
-    const timeB = Date.parse(b.publishedAt) || 0;
-    return timeB - timeA;
-  });
+  finalItems.sort((a, b) =>
+    (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0)
+  );
 
   let databaseSaved = 0;
   let translatedCount = 0;
@@ -567,12 +469,6 @@ export async function onRequest(context) {
   const translationLimit = 10;
 
   try {
-    const db = context.env.DB;
-
-    if (!db) {
-      throw new Error("没有找到 DB 数据库绑定");
-    }
-
     let processed = 0;
 
     for (const item of finalItems) {
@@ -580,14 +476,8 @@ export async function onRequest(context) {
 
       const insertResult = await db.prepare(`
         INSERT OR IGNORE INTO playerbuzz_items (
-          id,
-          source,
-          source_link,
-          original_title,
-          original_content,
-          category,
-          published_at,
-          review_status
+          id, source, source_link, original_title, original_content,
+          category, published_at, review_status
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
       `).bind(
@@ -615,18 +505,14 @@ export async function onRequest(context) {
 
       const oldTitle = existing.chinese_title || "";
       const oldContent = existing.chinese_content || "";
-
       const titleIsChinese = hasChinese(oldTitle);
       const contentIsChinese = hasChinese(oldContent);
 
-      // 已有中文内容不覆盖
       if (titleIsChinese && contentIsChinese) {
         alreadyTranslated++;
-
         item.chineseTitle = oldTitle;
         item.chineseContent = oldContent;
         item.translationStatus = "translated";
-
         continue;
       }
 
@@ -644,16 +530,11 @@ export async function onRequest(context) {
         await db.prepare(`
           UPDATE playerbuzz_items
           SET
-            chinese_title = CASE
-              WHEN ? = 1 THEN ?
-              ELSE chinese_title
-            END,
-            chinese_content = CASE
-              WHEN ? = 1 THEN ?
-              ELSE chinese_content
-            END,
+            chinese_title = CASE WHEN ? = 1 THEN ? ELSE chinese_title END,
+            chinese_content = CASE WHEN ? = 1 THEN ? ELSE chinese_content END,
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
+            AND review_status = 'pending'
         `).bind(
           titleIsChinese ? 0 : 1,
           translated.title,
@@ -662,31 +543,25 @@ export async function onRequest(context) {
           itemId
         ).run();
 
-        const savedTranslation = await db.prepare(`
+        const saved = await db.prepare(`
           SELECT chinese_title, chinese_content
           FROM playerbuzz_items
           WHERE id = ?
         `).bind(itemId).first();
 
-        item.chineseTitle = savedTranslation?.chinese_title || "";
-        item.chineseContent = savedTranslation?.chinese_content || "";
+        item.chineseTitle = saved?.chinese_title || "";
+        item.chineseContent = saved?.chinese_content || "";
         item.translationStatus = "translated";
-
         translatedCount++;
-
       } catch (error) {
         translationFailed++;
         translationPending++;
-
         item.translationStatus = "failed";
-
         errors.push(
-          "AI翻译失败：" + item.title + "：" +
-          (error.message || "未知错误")
+          "AI翻译失败：" + item.title + "：" + (error.message || "未知错误")
         );
       }
     }
-
   } catch (error) {
     databaseError = error.message || "数据库保存失败";
     errors.push("D1数据库：" + databaseError);
@@ -698,13 +573,11 @@ export async function onRequest(context) {
     dataSource: feeds.map(feed => feed.name),
     successfulSources,
     total: finalItems.length,
-
     database: {
       connected: !databaseError,
       saved: databaseSaved,
       error: databaseError
     },
-
     translation: {
       model: "@cf/zai-org/glm-4.7-flash",
       translated: translatedCount,
@@ -713,10 +586,8 @@ export async function onRequest(context) {
       waiting: translationPending,
       limitPerRequest: translationLimit
     },
-
     pendingReview: finalItems.length,
     errors,
     items: finalItems
-
   }, finalItems.length > 0 ? 200 : 502);
 }
