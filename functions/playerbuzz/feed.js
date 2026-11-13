@@ -66,6 +66,156 @@ export async function onRequest(context) {
     return values.year + "-" + values.month + "-" + values.day;
   }
 
+  // 规范化新闻链接，去除常见追踪参数。
+  function normalizeUrl(value) {
+    if (!value) return "";
+
+    try {
+      const parsed = new URL(value);
+      parsed.hash = "";
+
+      const removeParams = [
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_content",
+        "utm_term",
+        "guccounter",
+        "guce_referrer",
+        "guce_referrer_sig"
+      ];
+
+      for (const key of removeParams) {
+        parsed.searchParams.delete(key);
+      }
+
+      return parsed.toString().replace(/\/$/, "").toLowerCase();
+    } catch {
+      return String(value).trim().toLowerCase();
+    }
+  }
+
+  // 新闻标题标准化。
+  function normalizeTitle(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/&amp;/g, "&")
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // 移除常见无意义词，减少媒体标题格式差异的影响。
+  function getTitleTokens(value) {
+    const stopWords = new Set([
+      "the", "a", "an", "and", "or", "but", "for", "to",
+      "of", "in", "on", "at", "by", "with", "from", "after",
+      "before", "over", "as", "is", "are", "was", "were",
+      "has", "have", "had", "will", "would", "could",
+      "nba", "report", "reports", "reported", "update",
+      "updates", "latest"
+    ]);
+
+    return new Set(
+      normalizeTitle(value)
+        .split(" ")
+        .filter(word => word.length > 1 && !stopWords.has(word))
+    );
+  }
+
+  // 计算标题相似度。只用于高置信度去重，不做宽松猜测。
+  function titleSimilarity(first, second) {
+    const a = normalizeTitle(first);
+    const b = normalizeTitle(second);
+
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+
+    const tokensA = getTitleTokens(a);
+    const tokensB = getTitleTokens(b);
+
+    if (!tokensA.size || !tokensB.size) return 0;
+
+    let intersection = 0;
+
+    for (const token of tokensA) {
+      if (tokensB.has(token)) intersection++;
+    }
+
+    const union = new Set([...tokensA, ...tokensB]).size;
+    const jaccard = intersection / union;
+    const overlap = intersection / Math.min(tokensA.size, tokensB.size);
+
+    return Math.max(jaccard, overlap * 0.9);
+  }
+
+  function isCloseInTime(first, second) {
+    const a = Date.parse(first || "");
+    const b = Date.parse(second || "");
+
+    // 如果两边都有时间，要求相差不超过5天。
+    if (Number.isFinite(a) && Number.isFinite(b)) {
+      return Math.abs(a - b) <= 5 * 24 * 60 * 60 * 1000;
+    }
+
+    // 时间缺失时，不使用模糊标题匹配。
+    return false;
+  }
+
+  function isDuplicateNews(item, previousItems) {
+    const currentUrl = normalizeUrl(item.sourceLink);
+    const currentTitle = normalizeTitle(item.title);
+
+    for (const previous of previousItems) {
+      const previousUrl = normalizeUrl(
+        previous.source_link || previous.sourceLink
+      );
+
+      // 相同原文链接：直接判定重复。
+      if (currentUrl && previousUrl && currentUrl === previousUrl) {
+        return {
+          duplicate: true,
+          reason: "相同新闻链接",
+          matchedId: previous.id
+        };
+      }
+
+      const previousTitle = normalizeTitle(
+        previous.original_title || previous.title
+      );
+
+      if (!currentTitle || !previousTitle) continue;
+
+      // 标题完全相同：直接判定重复。
+      if (currentTitle === previousTitle) {
+        return {
+          duplicate: true,
+          reason: "标题完全相同",
+          matchedId: previous.id
+        };
+      }
+
+      // 标题高度相似，并且发布时间接近，才判定重复。
+      if (
+        isCloseInTime(item.publishedAt, previous.published_at || previous.publishedAt) &&
+        titleSimilarity(currentTitle, previousTitle) >= 0.88
+      ) {
+        return {
+          duplicate: true,
+          reason: "标题高度相似且发布时间接近",
+          matchedId: previous.id
+        };
+      }
+    }
+
+    return {
+      duplicate: false,
+      reason: "",
+      matchedId: null
+    };
+  }
+
   function getAIText(result) {
     const message = result?.choices?.[0]?.message;
     let content = message?.content;
@@ -117,14 +267,13 @@ export async function onRequest(context) {
 
     try {
       return JSON.parse(cleaned);
-    } catch (error) {
+    } catch {
       throw new Error(
         "AI返回内容不是有效JSON：" + cleaned.slice(0, 200)
       );
     }
   }
 
-  // AI每日精选：同时判断NBA球员的场内和场外新闻。
   async function selectDailyNews(candidates, remaining) {
     if (!context.env.AI) {
       throw new Error("没有找到 AI 绑定");
@@ -134,13 +283,7 @@ export async function onRequest(context) {
       return [];
     }
 
-    // 不再用关键词提前排除比赛、伤病、交易等新闻。
-    // 所有候选新闻统一交由AI进行语义判断。
     const limitedCandidates = candidates.slice(0, 60);
-
-    if (!limitedCandidates.length) {
-      return [];
-    }
 
     const compactCandidates = limitedCandidates.map((item, index) => ({
       index,
@@ -153,85 +296,55 @@ export async function onRequest(context) {
 
 Your job is to select meaningful, genuine news about NBA PLAYERS.
 
-IMPORTANT:
-This is NOT an off-court-only gossip service.
-You must consider BOTH ON-COURT basketball news AND OFF-COURT personal news.
+Consider BOTH ON-COURT basketball news AND OFF-COURT personal news.
 
-A story can qualify if it is genuinely about an identifiable NBA player and reports a meaningful event, development, performance, or activity.
+QUALIFY:
+- Game performances, records, milestones and statistics.
+- Injuries, recovery and return-to-play news.
+- Trades, contracts, free agency and roster moves.
+- Suspensions, disciplinary actions and meaningful player incidents.
+- Player statements and significant basketball developments.
+- Family, relationships, personal life and social media activity.
+- Controversies, charity, business ventures, fashion and hobbies.
+- Other meaningful events specifically about identifiable NBA players.
 
-CATEGORY A - ON-COURT AND BASKETBALL NEWS:
-
-Select meaningful player-related basketball news, including:
-- Game performances, scoring, rebounds, assists, steals, blocks and other statistics.
-- Outstanding performances, game-winning plays and important individual contributions.
-- Career highs, records, milestones and historical achievements.
-- Player performance analysis and significant changes in playing form.
-- Injuries, medical updates, rehabilitation, recovery and return-to-play news.
-- Suspensions, disciplinary actions and player-related incidents.
-- Trades, transfer rumors, roster moves, contract extensions, free agency and salary developments.
-- Player conflicts, rivalries and meaningful incidents during games.
-- Significant statements by players about basketball, teammates, opponents or their teams.
-- Individual player stories connected to important NBA events.
-
-CATEGORY B - OFF-COURT AND PERSONAL NEWS:
-
-Select meaningful personal or lifestyle news, including:
-- Family, partners, marriage, relationships, children and personal life.
-- Social media posts, online interactions, viral moments and public reactions.
-- Controversies, disputes, arguments and incidents outside games.
-- Charity, philanthropy, community activities and personal causes.
-- Business ventures, investments, endorsements and personal brands.
-- Fashion, hobbies, entertainment appearances and lifestyle activities.
-- Legal or personal incidents involving a player, when supported by the article.
-
-STRICTLY REJECT:
-
-- General team news that does not focus on a specific NBA player.
-- General league announcements without meaningful player-related information.
-- Game schedules, routine previews and upcoming match listings.
-- Generic team promotions, advertisements and sponsor announcements.
-- Generic rankings, betting odds and fantasy basketball advice without meaningful player news.
-- Pure opinion pieces that contain no concrete player-related development.
+REJECT:
+- General team or league news without a specific player focus.
+- Schedules, routine previews and upcoming match listings.
+- Generic promotions and advertisements.
+- Betting odds and fantasy advice.
+- Pure opinion without a concrete development.
 - Duplicate reports about the same event.
-- Vague headlines or descriptions that do not provide enough information to understand the story.
-- Articles that merely mention a player's name without making that player the actual subject.
-- Non-NBA sports news or stories about people who are not NBA players.
+- Vague stories without enough information.
+- Stories that merely mention a player's name.
+- Non-NBA sports news.
 
 EDITORIAL RULES:
+1. Consider title and description together.
+2. The main subject must be an NBA player.
+3. Do not reject meaningful game, injury, trade or contract news.
+4. Prefer concrete developments.
+5. Do not invent facts.
+6. Preserve player names exactly as written.
+7. Do not translate titles or descriptions.
+8. Avoid multiple reports about the same event.
+9. Quality is more important than quantity.
+10. Return only candidate index numbers.
 
-1. Consider both the title and description together.
-2. Identify the actual subject of each story. The main subject must be an NBA player.
-3. Do not reject a story just because it concerns a game, injury, suspension, trade or contract. These are valid categories of NBA player news.
-4. Do not select a story merely because it contains an NBA player's name.
-5. Prefer concrete events, developments and meaningful information over routine updates.
-6. If the description is too vague to establish what happened, reject it.
-7. Avoid selecting multiple reports about the same event.
-8. Select a balanced mix of on-court and off-court stories when good candidates are available. Do not force a balance when one category has no good news.
-9. Quality is more important than quantity. Select fewer than the maximum when appropriate, including zero.
-10. Never invent facts or add information that is not in the supplied title or description.
-11. Preserve player names exactly as written in the original source.
-12. Do not translate titles or descriptions.
-13. Return only candidate index numbers, not titles or explanations.
-
-Return valid JSON only, with no Markdown or extra text.
-Required format: {"selected":[0,2,5]}`;
-
-    const userPrompt = JSON.stringify({
-      requiredMaximum: remaining,
-      candidates: compactCandidates
-    });
+Return valid JSON only:
+{"selected":[0,2,5]}`;
 
     const result = await context.env.AI.run(
       "@cf/zai-org/glm-4.7-flash",
       {
         messages: [
-          {
-            role: "system",
-            content: systemPrompt
-          },
+          { role: "system", content: systemPrompt },
           {
             role: "user",
-            content: userPrompt
+            content: JSON.stringify({
+              requiredMaximum: remaining,
+              candidates: compactCandidates
+            })
           }
         ],
         chat_template_kwargs: {
@@ -257,11 +370,9 @@ Required format: {"selected":[0,2,5]}`;
     } else if (typeof parsed?.selected === "string") {
       try {
         const nested = JSON.parse(parsed.selected);
-        if (Array.isArray(nested)) {
-          selectedValues = nested;
-        }
-      } catch (error) {
-        // 保留下面的格式错误提示
+        if (Array.isArray(nested)) selectedValues = nested;
+      } catch {
+        // 保留格式错误提示
       }
     }
 
@@ -332,7 +443,7 @@ Required format: {"selected":[0,2,5]}`;
     });
   }
 
-  // 采集RSS
+  // 第一步：采集RSS。
   const results = await Promise.allSettled(
     feeds.map(async config => {
       const response = await fetch(config.url, {
@@ -389,26 +500,81 @@ Required format: {"selected":[0,2,5]}`;
     }
   });
 
-  const seen = new Set();
-  const finalItems = [];
+  // 第二步：同一轮RSS内部先去重。
+  const batchItems = [];
+  const batchDuplicates = [];
 
   for (const item of items) {
-    const key = item.id || item.title;
+    const duplicate = isDuplicateNews(item, batchItems);
 
-    if (!seen.has(key)) {
-      seen.add(key);
-      finalItems.push(item);
+    if (duplicate.duplicate) {
+      batchDuplicates.push({
+        id: item.id,
+        title: item.title,
+        source: item.source,
+        reason: duplicate.reason,
+        matchedId: duplicate.matchedId
+      });
+    } else {
+      batchItems.push(item);
     }
   }
 
-  finalItems.sort((a, b) =>
+  batchItems.sort((a, b) =>
     (Date.parse(b.publishedAt) || 0) -
     (Date.parse(a.publishedAt) || 0)
   );
 
-  // 保存RSS原文，不覆盖已有记录
+  // 第三步：读取数据库最近新闻，用于跨批次去重。
+  let existingNews = [];
+
+  try {
+    const existingResult = await db.prepare(`
+      SELECT
+        id,
+        source_link,
+        original_title,
+        published_at,
+        review_status
+      FROM playerbuzz_items
+      ORDER BY COALESCE(published_at, created_at) DESC
+      LIMIT 500
+    `).all();
+
+    existingNews = existingResult.results || [];
+  } catch (error) {
+    return json({
+      success: false,
+      message: "读取已有新闻失败，已停止写入，避免重复保存",
+      error: error.message || "数据库读取失败"
+    }, 500);
+  }
+
+  // 第四步：与数据库中已有新闻比较。
+  const finalItems = [];
+  const databaseDuplicates = [];
+
+  for (const item of batchItems) {
+    const duplicate = isDuplicateNews(item, existingNews);
+
+    if (duplicate.duplicate) {
+      databaseDuplicates.push({
+        id: item.id,
+        title: item.title,
+        source: item.source,
+        reason: duplicate.reason,
+        matchedId: duplicate.matchedId
+      });
+    } else {
+      finalItems.push(item);
+    }
+  }
+
+  // 第五步：只插入没有重复的新闻。
+  // INSERT OR IGNORE 保留原有ID冲突保护。
   let databaseSaved = 0;
   let databaseError = null;
+  const insertedItems = [];
 
   try {
     for (const item of finalItems) {
@@ -428,7 +594,13 @@ Required format: {"selected":[0,2,5]}`;
         item.publishedAt || ""
       ).run();
 
-      databaseSaved += insertResult.meta?.changes || 0;
+      const changes = insertResult.meta?.changes || 0;
+
+      databaseSaved += changes;
+
+      if (changes > 0) {
+        insertedItems.push(item);
+      }
     }
   } catch (error) {
     databaseError = error.message || "数据库保存失败";
@@ -444,9 +616,14 @@ Required format: {"selected":[0,2,5]}`;
       successfulSources,
       total: finalItems.length,
       database: {
-        connected: false,
+        connected: true,
         saved: databaseSaved,
         error: databaseError
+      },
+      deduplication: {
+        collected: items.length,
+        removedInFeedBatch: batchDuplicates.length,
+        removedAgainstDatabase: databaseDuplicates.length
       },
       errors
     }, 500);
@@ -463,8 +640,8 @@ Required format: {"selected":[0,2,5]}`;
   let candidatesSentToAI = 0;
   let aiReturnedSelectionCount = 0;
 
-  // 第一步：撤销今天尚未审核的旧精选资格。
-  // 只处理 pending，不影响 approved 和 rejected。
+  // 只撤销今天尚未审核的旧精选资格。
+  // 已通过和已拒绝新闻不受影响。
   try {
     await db.prepare(`
       UPDATE playerbuzz_items
@@ -477,8 +654,6 @@ Required format: {"selected":[0,2,5]}`;
         AND review_status = 'pending'
     `).bind(today).run();
 
-    // 第二步：统计今天已经正式发布的AI精选新闻。
-    // 已通过的新闻保留并计入每日20条上限。
     const selectedResult = await db.prepare(`
       SELECT id
       FROM playerbuzz_items
@@ -501,31 +676,22 @@ Required format: {"selected":[0,2,5]}`;
   let selectedToday = selectedIds.size;
   const remaining = Math.max(0, dailyLimit - selectedToday);
 
-  // 第三步：把所有普通待审核新闻交给AI判断。
-  // 不再提前排除场内新闻或场外新闻。
-  if (selectionReady && remaining > 0) {
+  // 只让本次真正新增的新闻参与AI精选。
+  if (selectionReady && remaining > 0 && insertedItems.length > 0) {
     try {
       const candidates = [];
 
-      for (const item of finalItems) {
-        if (selectedIds.has(String(item.id))) {
-          continue;
-        }
-
+      for (const item of insertedItems) {
         const existing = await db.prepare(`
           SELECT
             id,
             review_status,
             original_title,
-            original_content,
-            chinese_title,
-            chinese_content
+            original_content
           FROM playerbuzz_items
           WHERE id = ?
         `).bind(String(item.id)).first();
 
-        // 只处理普通待审核新闻。
-        // 已通过、已拒绝的新闻绝不重新处理。
         if (!existing || existing.review_status !== "pending") {
           continue;
         }
@@ -555,8 +721,6 @@ Required format: {"selected":[0,2,5]}`;
           continue;
         }
 
-        // 自动发布：设置为 approved。
-        // public.js 会读取 approved 新闻。
         const result = await db.prepare(`
           UPDATE playerbuzz_items
           SET
@@ -594,15 +758,14 @@ Required format: {"selected":[0,2,5]}`;
 
   selectedToday = selectedIds.size;
 
-  // 精选新闻优先返回
-  const orderedItems = [...finalItems].sort((a, b) => {
+  // 精选新闻优先返回。
+  const orderedItems = [...insertedItems].sort((a, b) => {
     const aSelected = selectedIds.has(String(a.id)) ? 1 : 0;
     const bSelected = selectedIds.has(String(b.id)) ? 1 : 0;
 
     return bSelected - aSelected;
   });
 
-  // 返回英文原文，不调用AI翻译
   const outputItems = [];
 
   for (const item of orderedItems) {
@@ -629,7 +792,7 @@ Required format: {"selected":[0,2,5]}`;
     });
   }
 
-  // 读取今天已经正式发布的AI精选新闻
+  // 读取今天已正式发布的AI精选新闻。
   let todayFeatured = [];
 
   try {
@@ -667,9 +830,9 @@ Required format: {"selected":[0,2,5]}`;
   }
 
   return json({
-    success: finalItems.length > 0,
+    success: true,
     service: "B-BALL Player Buzz",
-    mode: "NBA Player News - On-Court & Off-Court - AI Selection - Auto Publish",
+    mode: "NBA Player News - Deduplication - AI Selection - Auto Publish",
     translationEnabled: false,
     dataSource: feeds.map(feed => feed.name),
     successfulSources,
@@ -678,6 +841,14 @@ Required format: {"selected":[0,2,5]}`;
       connected: true,
       saved: databaseSaved,
       error: null
+    },
+    deduplication: {
+      collected: items.length,
+      removedInFeedBatch: batchDuplicates.length,
+      removedAgainstDatabase: databaseDuplicates.length,
+      savedNewRecords: databaseSaved,
+      batchDuplicateDetails: batchDuplicates,
+      databaseDuplicateDetails: databaseDuplicates
     },
     dailySelection: {
       date: today,
@@ -703,5 +874,5 @@ Required format: {"selected":[0,2,5]}`;
     featuredItems: todayFeatured,
     errors,
     items: outputItems
-  }, finalItems.length > 0 ? 200 : 502);
+  }, 200);
 }
