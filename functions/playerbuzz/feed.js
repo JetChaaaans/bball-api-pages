@@ -17,8 +17,9 @@ export async function onRequest(context) {
     }, 405, cors);
   }
 
+  // 清理 RSS 文本
   function cleanText(value = "") {
-    return value
+    return String(value)
       .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
       .replace(/<[^>]*>/g, " ")
       .replace(/&amp;/g, "&")
@@ -36,6 +37,7 @@ export async function onRequest(context) {
       .trim();
   }
 
+  // 提取 RSS 标签
   function getTag(xml, tag) {
     const match = xml.match(
       new RegExp(
@@ -47,139 +49,114 @@ export async function onRequest(context) {
     return match ? cleanText(match[1]) : "";
   }
 
-  // ESPN NBA 新闻
-  async function getEspnNews() {
-    const url = "https://www.espn.com/espn/rss/nba/news";
-
-    const response = await fetch(url, {
+  // 通用 RSS 读取
+  async function getRssNews(config) {
+    const response = await fetch(config.url, {
       headers: {
-        "User-Agent": "B-BALL-News-Reader/1.0"
+        "User-Agent": "Mozilla/5.0 B-BALL-News-Reader/1.0",
+        "Accept": "application/rss+xml, application/xml, text/xml"
       }
     });
 
     if (!response.ok) {
-      throw new Error("ESPN RSS 请求失败：" + response.status);
+      throw new Error(
+        config.name + " RSS 请求失败：" + response.status
+      );
     }
 
     const xml = await response.text();
     const entries = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) || [];
 
-    return entries.slice(0, 20).map(item => ({
-      id: getTag(item, "guid") || getTag(item, "link"),
-      type: "news",
-      category: "NBA新闻",
-      title: getTag(item, "title"),
-      content: getTag(item, "description"),
-      source: "ESPN",
-      sourceLink: getTag(item, "link"),
-      publishedAt: getTag(item, "pubDate"),
-      reviewStatus: "pending"
-    })).filter(item => item.title);
-  }
+    return entries.slice(0, config.limit).map(item => {
+      const link = getTag(item, "link");
+      const guid = getTag(item, "guid");
 
-  // Google News RSS：球员场外动态相关新闻
-  async function getGoogleNews() {
-    const queries = [
-      '"NBA player" social media OR Instagram OR TikTok when:7d',
-      'NBA players off court viral post when:7d',
-      'NBA star interview personal life social media when:7d'
-    ];
-
-    const allItems = [];
-
-    for (const query of queries) {
-      const url = new URL(
-        "https://news.google.com/rss/search"
-      );
-
-      url.searchParams.set("q", query);
-      url.searchParams.set("hl", "en-US");
-      url.searchParams.set("gl", "US");
-      url.searchParams.set("ceid", "US:en");
-
-      const response = await fetch(url.toString(), {
-        headers: {
-          "User-Agent": "Mozilla/5.0 B-BALL-News-Reader/1.0",
-          "Accept": "application/rss+xml, application/xml, text/xml"
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error("Google News RSS 请求失败：" + response.status);
-      }
-
-      const xml = await response.text();
-      const entries = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) || [];
-
-      const items = entries.map(item => ({
-        id: getTag(item, "guid") || getTag(item, "link"),
+      return {
+        id: guid || link || getTag(item, "title"),
         type: "news",
-        category: "球员动态相关新闻",
+        category: config.category,
         title: getTag(item, "title"),
         content: getTag(item, "description"),
-        source: getTag(item, "source") || "Google News",
-        sourceLink: getTag(item, "link"),
+        source: config.name,
+        sourceLink: link,
         publishedAt: getTag(item, "pubDate"),
         reviewStatus: "pending"
-      })).filter(item => item.title);
-
-      allItems.push(...items);
-    }
-
-    // 按链接去重
-    const uniqueItems = [];
-    const seen = new Set();
-
-    for (const item of allItems) {
-      const key = item.id || item.title;
-
-      if (!seen.has(key)) {
-        seen.add(key);
-        uniqueItems.push(item);
-      }
-    }
-
-    return uniqueItems.slice(0, 30);
+      };
+    }).filter(item => item.title);
   }
 
-  // 两个新闻来源分别采集
-  const results = await Promise.allSettled([
-    getEspnNews(),
-    getGoogleNews()
-  ]);
+  // 免费新闻 RSS 来源
+  const feeds = [
+    {
+      name: "ESPN",
+      url: "https://www.espn.com/espn/rss/nba/news",
+      category: "NBA新闻",
+      limit: 20
+    },
+    {
+      name: "RotoWire",
+      url: "https://www.rotowire.com/rss/news.php?sport=NBA",
+      category: "球员动态",
+      limit: 20
+    },
+    {
+      name: "Yahoo Sports",
+      url: "https://sports.yahoo.com/nba/rss/",
+      category: "NBA新闻",
+      limit: 20
+    }
+  ];
+
+  // 分别请求，单个来源失败不影响其他来源
+  const results = await Promise.allSettled(
+    feeds.map(feed => getRssNews(feed))
+  );
 
   const items = [];
   const errors = [];
+  const successfulSources = [];
 
-  if (results[0].status === "fulfilled") {
-    items.push(...results[0].value);
-  } else {
-    errors.push("ESPN：" + results[0].reason.message);
-  }
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      items.push(...result.value);
 
-  if (results[1].status === "fulfilled") {
-    items.push(...results[1].value);
-  } else {
-    errors.push("Google News：" + results[1].reason.message);
-  }
+      successfulSources.push({
+        name: feeds[index].name,
+        count: result.value.length
+      });
+    } else {
+      errors.push(
+        feeds[index].name + "：" +
+        (result.reason?.message || "请求失败")
+      );
+    }
+  });
 
-  // 全部数据去重
+  // 按链接或标题去重
   const finalItems = [];
-  const finalSeen = new Set();
+  const seen = new Set();
 
   for (const item of items) {
     const key = item.id || item.title;
 
-    if (!finalSeen.has(key)) {
-      finalSeen.add(key);
+    if (!seen.has(key)) {
+      seen.add(key);
       finalItems.push(item);
     }
   }
 
+  // 按发布时间排序
+  finalItems.sort((a, b) => {
+    const timeA = Date.parse(a.publishedAt) || 0;
+    const timeB = Date.parse(b.publishedAt) || 0;
+    return timeB - timeA;
+  });
+
   return json({
     success: finalItems.length > 0,
     service: "B-BALL Player Buzz",
-    dataSource: ["ESPN RSS", "Google News RSS"],
+    dataSource: feeds.map(feed => feed.name),
+    successfulSources,
     total: finalItems.length,
     pendingReview: finalItems.length,
     errors,
@@ -193,7 +170,7 @@ function json(data, status, cors) {
     headers: {
       ...cors,
       "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "public, max-age=900"
+      "Cache-Control": "public, max-age=300"
     }
   });
 }
