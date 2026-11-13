@@ -473,30 +473,50 @@ Required format:
   const dailyLimit = 20;
   const selectedIds = new Set();
 
-  // 统计今日已经精选的新闻，包括已自动发布和人工通过的新闻
+  let newlySelected = 0;
+  let selectionError = null;
+  let selectionReady = true;
+
+  // 第一步：撤销今天尚未审核的旧精选资格。
+  // 只处理 pending，不影响 approved 和 rejected。
   try {
+    const resetResult = await db.prepare(`
+      UPDATE playerbuzz_items
+      SET
+        ai_selected = 0,
+        selection_date = NULL,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE ai_selected = 1
+        AND selection_date = ?
+        AND review_status = 'pending'
+    `).bind(today).run();
+
+    // 第二步：统计今天已经正式发布的 AI 精选新闻。
+    // 已通过的新闻保留并计入每日20条上限。
     const selectedResult = await db.prepare(`
       SELECT id
       FROM playerbuzz_items
       WHERE ai_selected = 1
         AND selection_date = ?
-        AND review_status != 'rejected'
+        AND review_status = 'approved'
     `).bind(today).all();
 
     for (const row of selectedResult.results || []) {
       selectedIds.add(String(row.id));
     }
+
   } catch (error) {
-    errors.push("读取今日精选记录失败：" + error.message);
+    selectionReady = false;
+    selectionError = "重置旧精选或读取已发布精选失败：" +
+      (error.message || "数据库操作失败");
+    errors.push("AI每日精选：" + selectionError);
   }
 
-  let newlySelected = 0;
-  let selectionError = null;
   let selectedToday = selectedIds.size;
-
   const remaining = Math.max(0, dailyLimit - selectedToday);
 
-  if (remaining > 0) {
+  // 第三步：重新进行AI精选，并直接自动发布。
+  if (selectionReady && remaining > 0) {
     try {
       const candidates = [];
 
@@ -517,7 +537,8 @@ Required format:
           WHERE id = ?
         `).bind(String(item.id)).first();
 
-        // 只处理普通待审核新闻，不碰已通过或已拒绝的新闻
+        // 只处理普通待审核新闻。
+        // 已通过、已拒绝的新闻绝不重新处理。
         if (!existing || existing.review_status !== "pending") {
           continue;
         }
@@ -539,7 +560,6 @@ Required format:
       );
 
       for (const item of selectedItems) {
-        // 自动发布前，必须确保英文原文标题和摘要均完整
         const originalTitle = String(item.title || "").trim();
         const originalContent = String(item.content || "").trim();
 
@@ -547,6 +567,8 @@ Required format:
           continue;
         }
 
+        // 自动发布：设置为 approved。
+        // public.js 会读取 approved 新闻。
         const result = await db.prepare(`
           UPDATE playerbuzz_items
           SET
@@ -575,6 +597,7 @@ Required format:
           selectedIds.add(String(item.id));
         }
       }
+
     } catch (error) {
       selectionError = error.message || "AI精选失败";
       errors.push("AI每日精选：" + selectionError);
@@ -591,7 +614,7 @@ Required format:
     return bSelected - aSelected;
   });
 
-  // 返回英文原文，不再调用AI翻译
+  // 返回英文原文，不调用AI翻译
   const outputItems = [];
 
   for (const item of orderedItems) {
@@ -618,7 +641,7 @@ Required format:
     });
   }
 
-  // 读取今日精选，包括自动发布的新闻
+  // 读取今天已经正式发布的AI精选新闻
   let todayFeatured = [];
 
   try {
@@ -650,6 +673,7 @@ Required format:
       chinese_content: row.original_content || "",
       translationStatus: "not_required"
     }));
+
   } catch (error) {
     errors.push("读取今日精选列表失败：" + error.message);
   }
