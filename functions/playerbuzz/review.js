@@ -17,12 +17,31 @@ export async function onRequest(context) {
     });
   }
 
+  function getBeijingDate() {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date());
+
+    const values = {};
+    for (const part of parts) {
+      values[part.type] = part.value;
+    }
+
+    return `${values.year}-${values.month}-${values.day}`;
+  }
+
   if (context.request.method === "OPTIONS") {
     return new Response(null, { headers: cors });
   }
 
   if (!["GET", "POST"].includes(context.request.method)) {
-    return json({ success: false, message: "不支持的请求方式" }, 405);
+    return json({
+      success: false,
+      message: "不支持的请求方式"
+    }, 405);
   }
 
   const adminPassword = context.env.ADMIN_PASSWORD;
@@ -57,7 +76,13 @@ export async function onRequest(context) {
       const url = new URL(context.request.url);
       const status = url.searchParams.get("status") || "pending";
 
-      const allowedStatuses = ["pending", "approved", "rejected", "all"];
+      const allowedStatuses = [
+        "pending",
+        "featured",
+        "approved",
+        "rejected",
+        "all"
+      ];
 
       if (!allowedStatuses.includes(status)) {
         return json({
@@ -67,16 +92,45 @@ export async function onRequest(context) {
       }
 
       let result;
+      const today = getBeijingDate();
 
-      if (status === "all") {
+      if (status === "featured") {
+        // 今日 AI 精选：只显示待审核且已有中文标题和摘要的新闻
         result = await db.prepare(`
-          SELECT * FROM playerbuzz_items
+          SELECT *
+          FROM playerbuzz_items
+          WHERE ai_selected = 1
+            AND selection_date = ?
+            AND review_status = 'pending'
+            AND TRIM(COALESCE(chinese_title, '')) != ''
+            AND TRIM(COALESCE(chinese_content, '')) != ''
+          ORDER BY COALESCE(published_at, created_at) DESC
+          LIMIT 100
+        `).bind(today).all();
+
+      } else if (status === "pending") {
+        // 普通待审核：排除 AI 每日精选
+        result = await db.prepare(`
+          SELECT *
+          FROM playerbuzz_items
+          WHERE review_status = 'pending'
+            AND COALESCE(ai_selected, 0) = 0
           ORDER BY COALESCE(published_at, created_at) DESC
           LIMIT 100
         `).all();
+
+      } else if (status === "all") {
+        result = await db.prepare(`
+          SELECT *
+          FROM playerbuzz_items
+          ORDER BY COALESCE(published_at, created_at) DESC
+          LIMIT 100
+        `).all();
+
       } else {
         result = await db.prepare(`
-          SELECT * FROM playerbuzz_items
+          SELECT *
+          FROM playerbuzz_items
           WHERE review_status = ?
           ORDER BY COALESCE(published_at, created_at) DESC
           LIMIT 100
@@ -85,6 +139,8 @@ export async function onRequest(context) {
 
       return json({
         success: true,
+        status,
+        date: today,
         total: result.results.length,
         items: result.results
       });
@@ -257,7 +313,9 @@ export async function onRequest(context) {
           String(category || "NBA新闻").trim(),
           String(id)
         ).run();
+
       } else {
+        // 拒绝时保留 AI 精选标记和日期，方便追踪历史
         await db.prepare(`
           UPDATE playerbuzz_items
           SET
