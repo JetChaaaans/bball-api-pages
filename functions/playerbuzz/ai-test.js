@@ -22,55 +22,26 @@ export async function onRequest(context) {
   }
 
   if (context.request.method !== "POST") {
-    return json({
-      success: false,
-      message: "只支持 POST 请求"
-    }, 405);
+    return json({ success: false, message: "只支持 POST 请求" }, 405);
   }
 
-  // 管理员密码验证
   const adminPassword = context.env.ADMIN_PASSWORD;
   const inputPassword = context.request.headers.get("X-Admin-Password");
 
-  if (!adminPassword) {
-    return json({
-      success: false,
-      message: "服务器未配置 ADMIN_PASSWORD"
-    }, 500);
+  if (!adminPassword || !inputPassword || inputPassword !== adminPassword) {
+    return json({ success: false, message: "管理员密码错误或未提供" }, 401);
   }
 
-  if (!inputPassword || inputPassword !== adminPassword) {
-    return json({
-      success: false,
-      message: "管理员密码错误或未提供"
-    }, 401);
-  }
-
-  // 检查 Workers AI 绑定
   if (!context.env.AI) {
-    return json({
-      success: false,
-      message: "没有找到 AI 绑定，请检查 Cloudflare Pages 的 Bindings 设置"
-    }, 500);
+    return json({ success: false, message: "没有找到 AI 绑定" }, 500);
   }
 
   try {
     const body = await context.request.json();
-
     const text = String(body.text || "").trim();
 
-    if (!text) {
-      return json({
-        success: false,
-        message: "请提供需要翻译的英文内容"
-      }, 400);
-    }
-
-    if (text.length > 1000) {
-      return json({
-        success: false,
-        message: "测试文本不能超过 1000 个字符"
-      }, 400);
+    if (!text || text.length > 1000) {
+      return json({ success: false, message: "测试文本不能为空，且不能超过1000个字符" }, 400);
     }
 
     const result = await context.env.AI.run(
@@ -79,7 +50,7 @@ export async function onRequest(context) {
         messages: [
           {
             role: "system",
-            content: "你是一名专业的NBA篮球新闻翻译。请将用户提供的英文准确翻译成自然、流畅的简体中文。保留球员姓名、球队名称和篮球专业术语。只输出中文译文，不要解释，不要添加原文没有的信息。"
+            content: "你是一名专业的NBA篮球新闻翻译。请将英文准确翻译成自然流畅的简体中文。保留球员姓名、球队名称和篮球专业术语。只输出中文译文，不要解释，不要添加原文没有的信息。"
           },
           {
             role: "user",
@@ -91,13 +62,23 @@ export async function onRequest(context) {
       }
     );
 
-    const translatedText = result?.response || "";
+    let translatedText = "";
 
-    if (!translatedText) {
+    if (typeof result === "string") {
+      translatedText = result;
+    } else if (typeof result?.response === "string") {
+      translatedText = result.response;
+    } else if (typeof result?.choices?.[0]?.message?.content === "string") {
+      translatedText = result.choices[0].message.content;
+    } else if (typeof result?.output_text === "string") {
+      translatedText = result.output_text;
+    }
+
+    if (!translatedText.trim()) {
       return json({
         success: false,
-        message: "AI 已响应，但没有返回翻译内容",
-        detail: result
+        message: "AI 已响应，但暂时无法识别返回内容。请把 rawResult 发给我。",
+        rawResult: result
       }, 502);
     }
 
@@ -115,4 +96,3 @@ export async function onRequest(context) {
     }, 500);
   }
 }
-
