@@ -95,6 +95,18 @@ export async function onRequest(context) {
     }
   }
 
+  // 判断链接是否为RotoWire球员资料页，而不是具体新闻文章。
+  function isPlayerProfileUrl(value) {
+    if (!value) return false;
+
+    try {
+      const parsed = new URL(value);
+      return /\/basketball\/player\//i.test(parsed.pathname);
+    } catch {
+      return /\/basketball\/player\//i.test(String(value));
+    }
+  }
+
   // 新闻标题标准化。
   function normalizeTitle(value) {
     return String(value || "")
@@ -167,13 +179,27 @@ export async function onRequest(context) {
     const currentUrl = normalizeUrl(item.sourceLink);
     const currentTitle = normalizeTitle(item.title);
 
-    for (const previous of previousItems) {
-      const previousUrl = normalizeUrl(
-        previous.source_link || previous.sourceLink
-      );
+    // 当前新闻链接是否为球员资料页。
+    const currentIsProfile = isPlayerProfileUrl(item.sourceLink);
 
-      // 相同原文链接：直接判定重复。
-      if (currentUrl && previousUrl && currentUrl === previousUrl) {
+    for (const previous of previousItems) {
+      const previousRawUrl =
+        previous.source_link || previous.sourceLink || "";
+
+      const previousUrl = normalizeUrl(previousRawUrl);
+
+      // 已有新闻链接是否为球员资料页。
+      const previousIsProfile = isPlayerProfileUrl(previousRawUrl);
+
+      // 只有双方都不是球员资料页时，
+      // 才允许通过相同链接直接判定重复。
+      if (
+        currentUrl &&
+        previousUrl &&
+        currentUrl === previousUrl &&
+        !currentIsProfile &&
+        !previousIsProfile
+      ) {
         return {
           duplicate: true,
           reason: "相同新闻链接",
@@ -198,7 +224,10 @@ export async function onRequest(context) {
 
       // 标题高度相似，并且发布时间接近，才判定重复。
       if (
-        isCloseInTime(item.publishedAt, previous.published_at || previous.publishedAt) &&
+        isCloseInTime(
+          item.publishedAt,
+          previous.published_at || previous.publishedAt
+        ) &&
         titleSimilarity(currentTitle, previousTitle) >= 0.88
       ) {
         return {
@@ -670,10 +699,9 @@ Return valid JSON only:
   let selectedToday = selectedIds.size;
   const remaining = Math.max(0, dailyLimit - selectedToday);
 
-  // 修复：使用本轮去重后的 finalItems 作为AI候选来源。
-  // 这样即使某条新闻之前已经入库，INSERT OR IGNORE 没有新增记录，
-  // 只要它仍然是 pending 状态，也可以继续参与AI精选。
-  // approved 和 rejected 新闻仍然不会进入候选池。
+  // 使用本轮去重后的 finalItems 作为AI候选来源。
+  // 只要新闻仍然是 pending 状态，就可以继续参与AI精选。
+  // approved 和 rejected 新闻不会进入候选池。
   if (selectionReady && remaining > 0 && finalItems.length > 0) {
     try {
       const candidates = [];
