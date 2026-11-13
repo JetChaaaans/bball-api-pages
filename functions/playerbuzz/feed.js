@@ -17,7 +17,6 @@ export async function onRequest(context) {
     }, 405, cors);
   }
 
-  // 清理 RSS 文本
   function cleanText(value = "") {
     return String(value)
       .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -37,7 +36,6 @@ export async function onRequest(context) {
       .trim();
   }
 
-  // 提取 RSS 标签
   function getTag(xml, tag) {
     const match = xml.match(
       new RegExp(
@@ -49,7 +47,6 @@ export async function onRequest(context) {
     return match ? cleanText(match[1]) : "";
   }
 
-  // 通用 RSS 读取
   async function getRssNews(config) {
     const response = await fetch(config.url, {
       headers: {
@@ -70,12 +67,13 @@ export async function onRequest(context) {
     return entries.slice(0, config.limit).map(item => {
       const link = getTag(item, "link");
       const guid = getTag(item, "guid");
+      const title = getTag(item, "title");
 
       return {
-        id: guid || link || getTag(item, "title"),
+        id: guid || link || title,
         type: "news",
         category: config.category,
-        title: getTag(item, "title"),
+        title,
         content: getTag(item, "description"),
         source: config.name,
         sourceLink: link,
@@ -85,7 +83,6 @@ export async function onRequest(context) {
     }).filter(item => item.title);
   }
 
-  // 免费新闻 RSS 来源
   const feeds = [
     {
       name: "ESPN",
@@ -107,7 +104,6 @@ export async function onRequest(context) {
     }
   ];
 
-  // 分别请求，单个来源失败不影响其他来源
   const results = await Promise.allSettled(
     feeds.map(feed => getRssNews(feed))
   );
@@ -132,7 +128,6 @@ export async function onRequest(context) {
     }
   });
 
-  // 按链接或标题去重
   const finalItems = [];
   const seen = new Set();
 
@@ -145,12 +140,60 @@ export async function onRequest(context) {
     }
   }
 
-  // 按发布时间排序
   finalItems.sort((a, b) => {
     const timeA = Date.parse(a.publishedAt) || 0;
     const timeB = Date.parse(b.publishedAt) || 0;
     return timeB - timeA;
   });
+
+  // 将新闻保存到 D1 数据库
+  let databaseSaved = 0;
+  let databaseError = null;
+
+  try {
+    const db = context.env.DB;
+
+    if (!db) {
+      throw new Error("没有找到 DB 数据库绑定，请检查 Cloudflare Bindings 设置");
+    }
+
+    const statements = finalItems.map(item =>
+      db.prepare(`
+        INSERT OR IGNORE INTO playerbuzz_items (
+          id,
+          source,
+          source_link,
+          original_title,
+          original_content,
+          category,
+          published_at,
+          review_status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+      `).bind(
+        String(item.id),
+        item.source,
+        item.sourceLink || "",
+        item.title,
+        item.content || "",
+        item.category || "NBA新闻",
+        item.publishedAt || ""
+      )
+    );
+
+    if (statements.length > 0) {
+      const saveResults = await db.batch(statements);
+
+      databaseSaved = saveResults.reduce(
+        (total, result) => total + (result.meta?.changes || 0),
+        0
+      );
+    }
+
+  } catch (error) {
+    databaseError = error.message || "数据库保存失败";
+    errors.push("D1 数据库：" + databaseError);
+  }
 
   return json({
     success: finalItems.length > 0,
@@ -159,6 +202,12 @@ export async function onRequest(context) {
     successfulSources,
     total: finalItems.length,
     pendingReview: finalItems.length,
+    database: {
+      connected: !databaseError,
+      saved: databaseSaved,
+      skipped: finalItems.length - databaseSaved,
+      error: databaseError
+    },
     errors,
     items: finalItems
   }, finalItems.length > 0 ? 200 : 502, cors);
