@@ -47,7 +47,6 @@ export async function onRequest(context) {
       .trim();
   }
 
-  // 判断内容是否真正包含中文
   function hasChinese(value = "") {
     return /[\u3400-\u4dbf\u4e00-\u9fff]/.test(String(value));
   }
@@ -61,6 +60,51 @@ export async function onRequest(context) {
     );
 
     return match ? cleanText(match[1]) : "";
+  }
+
+  // 解析AI返回的JSON，并兼容部分格式错误
+  function parseTranslation(rawText) {
+    const cleaned = rawText
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+
+    try {
+      return JSON.parse(cleaned);
+    } catch (error) {
+      // 尝试修复 summary 字段缺少引号的情况
+      const titleMatch = cleaned.match(
+        /"title"\s*:\s*"((?:\\.|[^"\\])*)"/
+      );
+
+      const summaryMatch = cleaned.match(
+        /"summary"\s*:\s*(?:"((?:\\.|[^"\\])*)"|([\s\S]*?))\s*\}\s*$/
+      );
+
+      if (titleMatch && summaryMatch) {
+        const title = JSON.parse('"' + titleMatch[1] + '"');
+
+        let summary = summaryMatch[1];
+
+        if (summary === undefined) {
+          summary = summaryMatch[2] || "";
+        } else {
+          summary = JSON.parse('"' + summary + '"');
+        }
+
+        summary = String(summary)
+          .replace(/,\s*$/, "")
+          .trim();
+
+        if (title && summary) {
+          return { title, summary };
+        }
+      }
+
+      throw new Error(
+        "AI返回内容不是有效JSON：" + cleaned.slice(0, 150)
+      );
+    }
   }
 
   async function getRssNews(config) {
@@ -99,7 +143,7 @@ export async function onRequest(context) {
     }).filter(item => item.title);
   }
 
-  // AI 翻译标题和摘要
+  // AI翻译：球员姓名必须保留英文
   async function translateNews(item) {
     if (!context.env.AI) {
       throw new Error("没有找到 AI 绑定");
@@ -117,22 +161,27 @@ export async function onRequest(context) {
           {
             role: "system",
             content: `你是一名专业的NBA中文新闻编辑。
-请将提供的英文NBA新闻标题和摘要翻译为自然、准确的简体中文。
 
-要求：
-1. 标题必须翻译成中文，不得直接照抄英文标题。
-2. 摘要必须翻译成中文，不得直接照抄英文摘要。
-3. NBA球员姓名应使用常见、准确的中文译名。
-4. 球队名称应使用常见中文译名。
-5. 不得把一个球员的姓名误译成另一个球员。
-6. 比赛数据、比分、时间和事实必须准确。
-7. 不得编造原文没有的信息。
-8. 如果原文只有标题没有摘要，可以根据标题写一句简短中文说明，但不得编造新闻事实。
-9. 不要展示分析过程。
-10. 必须只返回合法JSON，不要使用Markdown代码块。
+请把英文NBA新闻标题和摘要翻译成自然、准确的简体中文。
+
+必须严格遵守以下规则：
+
+1. 所有NBA球员姓名必须保留英文原名。
+2. 禁止将球员姓名翻译成中文、音译成中文或改写成其他英文姓名。
+3. 例如 Devin Booker 必须写作 Devin Booker，Marcus Smart 必须写作 Marcus Smart，Stephen Curry 必须写作 Stephen Curry，LeBron James 必须写作 LeBron James。
+4. 如果原文只出现球员姓氏，可以保留原文中的姓氏，不要自行猜测或替换成其他球员。
+5. 绝对不能把一个球员误写成另一个球员。例如 Marcus Smart 不能变成 Malcolm Brogdon。
+6. 球队名称翻译成常见中文名称。
+7. 新闻标题必须是中文，但其中球员姓名保持英文。
+8. 新闻摘要必须是中文，但其中球员姓名保持英文。
+9. 比分、数据、时间、伤病和比赛事实必须准确。
+10. 只能根据原文翻译，不得编造事实。
+11. 如果没有摘要，可以根据标题写一句简短中文说明，不得编造事实。
+12. 不要输出分析过程、解释或Markdown代码块。
+13. 必须返回合法JSON，title和summary的值必须使用英文双引号包围，不能遗漏引号。
 
 返回格式：
-{"title":"中文标题","summary":"中文摘要"}`
+{"title":"Devin Booker砍下30分，率队取得胜利","summary":"Devin Booker全场贡献30分，帮助球队战胜对手。"}`
           },
           {
             role: "user",
@@ -144,7 +193,7 @@ export async function onRequest(context) {
           clear_thinking: true
         },
         max_completion_tokens: 300,
-        temperature: 0.2
+        temperature: 0.1
       }
     );
 
@@ -157,21 +206,10 @@ export async function onRequest(context) {
       "";
 
     if (typeof rawText !== "string" || !rawText.trim()) {
-      throw new Error("AI 没有返回翻译内容");
+      throw new Error("AI没有返回翻译内容");
     }
 
-    const cleaned = rawText
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-
-    let translated;
-
-    try {
-      translated = JSON.parse(cleaned);
-    } catch {
-      throw new Error("AI 返回内容不是有效JSON：" + cleaned.slice(0, 150));
-    }
+    const translated = parseTranslation(rawText);
 
     if (
       typeof translated.title !== "string" ||
@@ -179,14 +217,14 @@ export async function onRequest(context) {
       typeof translated.summary !== "string" ||
       !translated.summary.trim()
     ) {
-      throw new Error("AI 返回的标题或摘要格式不正确");
+      throw new Error("AI返回的标题或摘要格式不正确");
     }
 
     if (
       !hasChinese(translated.title) ||
       !hasChinese(translated.summary)
     ) {
-      throw new Error("AI 返回内容没有包含中文，未保存翻译");
+      throw new Error("AI返回内容没有包含中文");
     }
 
     return {
@@ -265,7 +303,6 @@ export async function onRequest(context) {
   let translationFailed = 0;
   let databaseError = null;
 
-  // 每次最多翻译10条
   const translationLimit = 10;
 
   try {
@@ -280,7 +317,6 @@ export async function onRequest(context) {
     for (const item of finalItems) {
       const itemId = String(item.id);
 
-      // 先保存原始新闻
       const insertResult = await db.prepare(`
         INSERT OR IGNORE INTO playerbuzz_items (
           id,
@@ -305,7 +341,6 @@ export async function onRequest(context) {
 
       databaseSaved += insertResult.meta?.changes || 0;
 
-      // 读取已有翻译
       const existing = await db.prepare(`
         SELECT chinese_title, chinese_content
         FROM playerbuzz_items
@@ -323,7 +358,7 @@ export async function onRequest(context) {
       const titleIsChinese = hasChinese(oldTitle);
       const contentIsChinese = hasChinese(oldContent);
 
-      // 两个字段都是真正的中文，才算翻译完成
+      // 已有中文内容不覆盖
       if (titleIsChinese && contentIsChinese) {
         alreadyTranslated++;
 
@@ -345,8 +380,6 @@ export async function onRequest(context) {
       try {
         const translated = await translateNews(item);
 
-        // 只更新空白或不含中文的字段
-        // 已有中文内容不会被覆盖
         await db.prepare(`
           UPDATE playerbuzz_items
           SET
@@ -402,9 +435,7 @@ export async function onRequest(context) {
     success: finalItems.length > 0,
     service: "B-BALL Player Buzz",
     dataSource: feeds.map(feed => feed.name),
-
     successfulSources,
-
     total: finalItems.length,
 
     database: {
@@ -423,9 +454,7 @@ export async function onRequest(context) {
     },
 
     pendingReview: finalItems.length,
-
     errors,
-
     items: finalItems
 
   }, finalItems.length > 0 ? 200 : 502);
