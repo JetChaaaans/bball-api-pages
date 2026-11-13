@@ -66,7 +66,6 @@ export async function onRequest(context) {
     return values.year + "-" + values.month + "-" + values.day;
   }
 
-  // 兼容不同形式的 AI 返回内容
   function getAIText(result) {
     const message = result?.choices?.[0]?.message;
     let content = message?.content;
@@ -341,7 +340,6 @@ Required format:
     }, 500);
   }
 
-  // 旧的 repair=1 翻译修复模式已停用，不再执行中文翻译
   if (repairMode) {
     return json({
       success: true,
@@ -471,11 +469,11 @@ Required format:
     }, 500);
   }
 
-  // 查询今天已经精选的新闻
   const today = getBeijingDate();
   const dailyLimit = 20;
   const selectedIds = new Set();
 
+  // 统计今日已经精选的新闻，包括已自动发布和人工通过的新闻
   try {
     const selectedResult = await db.prepare(`
       SELECT id
@@ -508,11 +506,18 @@ Required format:
         }
 
         const existing = await db.prepare(`
-          SELECT review_status
+          SELECT
+            id,
+            review_status,
+            original_title,
+            original_content,
+            chinese_title,
+            chinese_content
           FROM playerbuzz_items
           WHERE id = ?
         `).bind(String(item.id)).first();
 
+        // 只处理普通待审核新闻，不碰已通过或已拒绝的新闻
         if (!existing || existing.review_status !== "pending") {
           continue;
         }
@@ -521,7 +526,11 @@ Required format:
           continue;
         }
 
-        candidates.push(item);
+        candidates.push({
+          ...item,
+          title: existing.original_title || item.title || "",
+          content: existing.original_content || item.content || ""
+        });
       }
 
       const selectedItems = await selectDailyNews(
@@ -530,17 +539,32 @@ Required format:
       );
 
       for (const item of selectedItems) {
+        // 自动发布前，必须确保英文原文标题和摘要均完整
+        const originalTitle = String(item.title || "").trim();
+        const originalContent = String(item.content || "").trim();
+
+        if (!originalTitle || !originalContent) {
+          continue;
+        }
+
         const result = await db.prepare(`
           UPDATE playerbuzz_items
           SET
             ai_selected = 1,
             selection_date = ?,
+            chinese_title = ?,
+            chinese_content = ?,
+            review_status = 'approved',
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
             AND ai_selected = 0
             AND review_status = 'pending'
+            AND TRIM(COALESCE(original_title, '')) != ''
+            AND TRIM(COALESCE(original_content, '')) != ''
         `).bind(
           today,
+          originalTitle,
+          originalContent,
           String(item.id)
         ).run();
 
@@ -567,7 +591,7 @@ Required format:
     return bSelected - aSelected;
   });
 
-  // 直接读取英文原文，不再调用AI翻译
+  // 返回英文原文，不再调用AI翻译
   const outputItems = [];
 
   for (const item of orderedItems) {
@@ -586,18 +610,15 @@ Required format:
       ...item,
       title: englishTitle,
       content: englishContent,
-
-      // 兼容旧版前端字段，但内容全部为英文原文
       chineseTitle: englishTitle,
       chineseContent: englishContent,
       chinese_title: englishTitle,
       chinese_content: englishContent,
-
       translationStatus: "not_required"
     });
   }
 
-  // 返回今天的精选新闻，英文原文优先
+  // 读取今日精选，包括自动发布的新闻
   let todayFeatured = [];
 
   try {
@@ -614,7 +635,7 @@ Required format:
       FROM playerbuzz_items
       WHERE ai_selected = 1
         AND selection_date = ?
-        AND review_status != 'rejected'
+        AND review_status = 'approved'
       ORDER BY COALESCE(published_at, created_at) DESC
       LIMIT 20
     `).bind(today).all();
@@ -623,13 +644,10 @@ Required format:
       ...row,
       title: row.original_title || "",
       content: row.original_content || "",
-
-      // 兼容旧版前端：这些字段现在也返回英文
       chineseTitle: row.original_title || "",
       chineseContent: row.original_content || "",
       chinese_title: row.original_title || "",
       chinese_content: row.original_content || "",
-
       translationStatus: "not_required"
     }));
   } catch (error) {
@@ -639,7 +657,7 @@ Required format:
   return json({
     success: finalItems.length > 0,
     service: "B-BALL Player Buzz",
-    mode: "English Original",
+    mode: "English Original - Auto Publish",
     translationEnabled: false,
     dataSource: feeds.map(feed => feed.name),
     successfulSources,
@@ -651,7 +669,7 @@ Required format:
     },
     dailySelection: {
       date: today,
-      mode: "AI精选（英文原文）",
+      mode: "AI精选后自动发布（英文原文）",
       dailyLimit,
       selectedToday: todayFeatured.length,
       newlySelected,
