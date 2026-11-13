@@ -47,6 +47,11 @@ export async function onRequest(context) {
       .trim();
   }
 
+  // 判断内容是否真正包含中文
+  function hasChinese(value = "") {
+    return /[\u3400-\u4dbf\u4e00-\u9fff]/.test(String(value));
+  }
+
   function getTag(xml, tag) {
     const match = xml.match(
       new RegExp(
@@ -94,7 +99,7 @@ export async function onRequest(context) {
     }).filter(item => item.title);
   }
 
-  // 使用 AI 翻译标题和新闻摘要
+  // AI 翻译标题和摘要
   async function translateNews(item) {
     if (!context.env.AI) {
       throw new Error("没有找到 AI 绑定");
@@ -112,15 +117,20 @@ export async function onRequest(context) {
           {
             role: "system",
             content: `你是一名专业的NBA中文新闻编辑。
-请将提供的英文NBA新闻标题和摘要翻译、整理为简体中文。
+请将提供的英文NBA新闻标题和摘要翻译为自然、准确的简体中文。
+
 要求：
-1. 准确保留球员姓名、球队名称、比赛数据和事实。
-2. title 是简洁自然的中文新闻标题。
-3. summary 是简短、流畅的中文新闻摘要，通常1至2句话。
-4. 只能依据提供的英文内容，不得编造事实。
-5. 如果没有提供摘要，只能根据标题进行简短转述。
-6. 不要展示分析过程。
-7. 必须只返回合法JSON，不要使用Markdown代码块。
+1. 标题必须翻译成中文，不得直接照抄英文标题。
+2. 摘要必须翻译成中文，不得直接照抄英文摘要。
+3. NBA球员姓名应使用常见、准确的中文译名。
+4. 球队名称应使用常见中文译名。
+5. 不得把一个球员的姓名误译成另一个球员。
+6. 比赛数据、比分、时间和事实必须准确。
+7. 不得编造原文没有的信息。
+8. 如果原文只有标题没有摘要，可以根据标题写一句简短中文说明，但不得编造新闻事实。
+9. 不要展示分析过程。
+10. 必须只返回合法JSON，不要使用Markdown代码块。
+
 返回格式：
 {"title":"中文标题","summary":"中文摘要"}`
           },
@@ -166,9 +176,17 @@ export async function onRequest(context) {
     if (
       typeof translated.title !== "string" ||
       !translated.title.trim() ||
-      typeof translated.summary !== "string"
+      typeof translated.summary !== "string" ||
+      !translated.summary.trim()
     ) {
-      throw new Error("AI 返回的中文标题或摘要格式不正确");
+      throw new Error("AI 返回的标题或摘要格式不正确");
+    }
+
+    if (
+      !hasChinese(translated.title) ||
+      !hasChinese(translated.summary)
+    ) {
+      throw new Error("AI 返回内容没有包含中文，未保存翻译");
     }
 
     return {
@@ -247,7 +265,7 @@ export async function onRequest(context) {
   let translationFailed = 0;
   let databaseError = null;
 
-  // 每次最多翻译10条，避免单次请求过长
+  // 每次最多翻译10条
   const translationLimit = 10;
 
   try {
@@ -262,7 +280,7 @@ export async function onRequest(context) {
     for (const item of finalItems) {
       const itemId = String(item.id);
 
-      // 先保存原文，确保翻译失败时新闻也不会丢失
+      // 先保存原始新闻
       const insertResult = await db.prepare(`
         INSERT OR IGNORE INTO playerbuzz_items (
           id,
@@ -287,7 +305,7 @@ export async function onRequest(context) {
 
       databaseSaved += insertResult.meta?.changes || 0;
 
-      // 查询数据库中已有的中文翻译
+      // 读取已有翻译
       const existing = await db.prepare(`
         SELECT chinese_title, chinese_content
         FROM playerbuzz_items
@@ -299,14 +317,20 @@ export async function onRequest(context) {
         continue;
       }
 
-      if (
-        existing.chinese_title &&
-        existing.chinese_content
-      ) {
+      const oldTitle = existing.chinese_title || "";
+      const oldContent = existing.chinese_content || "";
+
+      const titleIsChinese = hasChinese(oldTitle);
+      const contentIsChinese = hasChinese(oldContent);
+
+      // 两个字段都是真正的中文，才算翻译完成
+      if (titleIsChinese && contentIsChinese) {
         alreadyTranslated++;
-        item.chineseTitle = existing.chinese_title;
-        item.chineseContent = existing.chinese_content;
+
+        item.chineseTitle = oldTitle;
+        item.chineseContent = oldContent;
         item.translationStatus = "translated";
+
         continue;
       }
 
@@ -321,24 +345,25 @@ export async function onRequest(context) {
       try {
         const translated = await translateNews(item);
 
-        // 只补充空白翻译字段，不覆盖人工已经编辑的内容
+        // 只更新空白或不含中文的字段
+        // 已有中文内容不会被覆盖
         await db.prepare(`
           UPDATE playerbuzz_items
           SET
             chinese_title = CASE
-              WHEN chinese_title IS NULL OR chinese_title = ''
-              THEN ?
+              WHEN ? = 1 THEN ?
               ELSE chinese_title
             END,
             chinese_content = CASE
-              WHEN chinese_content IS NULL OR chinese_content = ''
-              THEN ?
+              WHEN ? = 1 THEN ?
               ELSE chinese_content
             END,
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
         `).bind(
+          titleIsChinese ? 0 : 1,
           translated.title,
+          contentIsChinese ? 0 : 1,
           translated.summary,
           itemId
         ).run();
@@ -349,8 +374,8 @@ export async function onRequest(context) {
           WHERE id = ?
         `).bind(itemId).first();
 
-        item.chineseTitle = savedTranslation?.chinese_title || translated.title;
-        item.chineseContent = savedTranslation?.chinese_content || translated.summary;
+        item.chineseTitle = savedTranslation?.chinese_title || "";
+        item.chineseContent = savedTranslation?.chinese_content || "";
         item.translationStatus = "translated";
 
         translatedCount++;
