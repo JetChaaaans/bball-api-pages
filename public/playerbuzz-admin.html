@@ -1,1 +1,267 @@
 
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>B-BALL 球员八卦审核后台</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f3f6fa;color:#233247;font-family:Arial,"Microsoft YaHei",sans-serif}
+header{background:#172b43;color:white;padding:24px 5%;display:flex;justify-content:space-between;align-items:center}
+header h1{font-size:21px;margin:0}
+header span{font-size:12px;color:#b8c7d8}
+main{max-width:1050px;margin:28px auto;padding:0 18px}
+.panel,.news-card{background:white;border:1px solid #e5ebf2;border-radius:14px;padding:20px;margin-bottom:18px}
+.login-row{display:flex;gap:10px;flex-wrap:wrap}
+input,textarea,select{width:100%;padding:11px;border:1px solid #dce3eb;border-radius:8px;font-size:14px;background:white;color:#26384c}
+.login-row input{flex:1;min-width:200px}
+textarea{min-height:100px;resize:vertical;line-height:1.6}
+button{border:0;border-radius:8px;padding:11px 18px;cursor:pointer;font-size:14px;font-weight:bold}
+.primary{background:#f58225;color:white}
+.approve{background:#16865b;color:white}
+.reject{background:#f0f2f5;color:#687789}
+button:disabled{opacity:.5;cursor:not-allowed}
+.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.toolbar select{width:auto;min-width:130px}
+.status{font-size:13px;color:#7d8b9c;margin-top:12px}
+.news-card h3{font-size:17px;margin:0 0 10px;line-height:1.5}
+.meta{font-size:12px;color:#8492a3;margin-bottom:14px;line-height:1.8}
+.field{margin-top:13px}
+.field label{display:block;font-size:13px;font-weight:bold;margin-bottom:7px;color:#53657a}
+.actions{display:flex;gap:10px;margin-top:16px}
+.empty{text-align:center;color:#91a0b0;padding:45px 10px}
+.source{color:#f58225}
+@media(max-width:600px){header{padding:18px}header h1{font-size:17px}.actions button{flex:1}.panel{padding:15px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏀 B-BALL 球员八卦审核后台</h1>
+  <span>PLAYER BUZZ ADMIN</span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2 style="font-size:17px;margin-top:0">管理员登录</h2>
+    <div class="login-row">
+      <input id="password" type="password" placeholder="请输入管理员密码">
+      <button class="primary" id="loginBtn">登录并读取新闻</button>
+    </div>
+    <div class="status" id="message">请输入管理员密码后登录。</div>
+  </section>
+
+  <section class="panel" id="workspace" hidden>
+    <div class="toolbar">
+      <strong>新闻审核列表</strong>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="statusFilter">
+          <option value="pending">待审核</option>
+          <option value="approved">已通过</option>
+          <option value="rejected">已拒绝</option>
+          <option value="all">全部新闻</option>
+        </select>
+        <button class="primary" id="refreshBtn">刷新</button>
+      </div>
+    </div>
+    <div class="status" id="count"></div>
+  </section>
+
+  <div id="newsList"></div>
+</main>
+
+<script>
+const API_URL = "/playerbuzz/review";
+let adminPassword = "";
+
+const message = document.getElementById("message");
+const workspace = document.getElementById("workspace");
+const newsList = document.getElementById("newsList");
+
+function setMessage(text) {
+  message.textContent = text;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&":"&amp;",
+    "<":"&lt;",
+    ">":"&gt;",
+    '"':"&quot;",
+    "'":"&#39;"
+  }[char]));
+}
+
+async function apiRequest(method, body = null, status = "pending") {
+  const options = {
+    method,
+    headers: {
+      "X-Admin-Password": adminPassword
+    }
+  };
+
+  if (body) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+
+  const url = method === "GET"
+    ? API_URL + "?status=" + encodeURIComponent(status)
+    : API_URL;
+
+  const response = await fetch(url, options);
+  const data = await response.json();
+
+  if (!response.ok || !data.success) {
+    throw new Error(data.message || "请求失败");
+  }
+
+  return data;
+}
+
+async function login() {
+  adminPassword = document.getElementById("password").value.trim();
+
+  if (!adminPassword) {
+    setMessage("请先输入管理员密码。");
+    return;
+  }
+
+  document.getElementById("loginBtn").disabled = true;
+  setMessage("正在验证密码……");
+
+  try {
+    await loadNews();
+    workspace.hidden = false;
+    document.getElementById("password").value = "";
+    setMessage("登录成功。关闭浏览器页面后需要重新登录。");
+  } catch (error) {
+    adminPassword = "";
+    setMessage("登录失败：" + error.message);
+  } finally {
+    document.getElementById("loginBtn").disabled = false;
+  }
+}
+
+function renderNews(items) {
+  if (!items || items.length === 0) {
+    newsList.innerHTML = '<div class="panel empty">当前没有符合条件的新闻。</div>';
+    return;
+  }
+
+  newsList.innerHTML = items.map(item => `
+    <article class="news-card" data-id="${escapeHtml(item.id)}">
+      <h3>${escapeHtml(item.original_title)}</h3>
+      <div class="meta">
+        来源：<span class="source">${escapeHtml(item.source)}</span>
+        · 发布时间：${escapeHtml(item.published_at || "未知")}
+        · 状态：${escapeHtml(item.review_status)}
+      </div>
+
+      <div class="field">
+        <label>中文标题</label>
+        <input class="chinese-title" value="${escapeHtml(item.chinese_title || item.original_title)}">
+      </div>
+
+      <div class="field">
+        <label>中文摘要（请自行整理，不要直接复制整篇新闻）</label>
+        <textarea class="chinese-content">${escapeHtml(item.chinese_content || item.original_content || "")}</textarea>
+      </div>
+
+      <div class="field">
+        <label>球员名称（可留空）</label>
+        <input class="player-name" value="${escapeHtml(item.player_name || "")}" placeholder="例如：LeBron James">
+      </div>
+
+      <div class="field">
+        <label>新闻分类</label>
+        <select class="category">
+          ${["NBA新闻","球员动态","场外生活","社交动态","趣闻八卦"].map(category =>
+            `<option value="${category}" ${item.category === category ? "selected" : ""}>${category}</option>`
+          ).join("")}
+        </select>
+      </div>
+
+      <div class="meta" style="margin-top:12px">
+        原文来源：${escapeHtml(item.source_link || "未提供")}
+      </div>
+
+      <div class="actions">
+        <button class="approve" data-action="approve">审核通过</button>
+        <button class="reject" data-action="reject">拒绝</button>
+      </div>
+    </article>
+  `).join("");
+
+  newsList.querySelectorAll("button[data-action]").forEach(button => {
+    button.addEventListener("click", () => reviewItem(button));
+  });
+}
+
+async function loadNews() {
+  const status = document.getElementById("statusFilter").value;
+
+  setMessage("正在读取新闻……");
+  newsList.innerHTML = '<div class="panel empty">正在加载……</div>';
+
+  try {
+    const data = await apiRequest("GET", null, status);
+    document.getElementById("count").textContent =
+      "当前显示 " + data.total + " 条新闻";
+    renderNews(data.items);
+    setMessage("新闻读取成功。");
+  } catch (error) {
+    newsList.innerHTML = "";
+    setMessage("读取失败：" + error.message);
+    throw error;
+  }
+}
+
+async function reviewItem(button) {
+  const card = button.closest(".news-card");
+  const action = button.dataset.action;
+
+  const body = {
+    id: card.dataset.id,
+    action
+  };
+
+  if (action === "approve") {
+    body.chinese_title = card.querySelector(".chinese-title").value.trim();
+    body.chinese_content = card.querySelector(".chinese-content").value.trim();
+    body.player_name = card.querySelector(".player-name").value.trim();
+    body.category = card.querySelector(".category").value;
+
+    if (!body.chinese_title || !body.chinese_content) {
+      alert("请填写中文标题和中文摘要后再审核通过。");
+      return;
+    }
+  }
+
+  if (action === "reject" && !confirm("确定拒绝这条新闻吗？")) {
+    return;
+  }
+
+  card.querySelectorAll("button").forEach(item => item.disabled = true);
+
+  try {
+    const result = await apiRequest("POST", body);
+    alert(result.message);
+    await loadNews();
+  } catch (error) {
+    alert("操作失败：" + error.message);
+    card.querySelectorAll("button").forEach(item => item.disabled = false);
+  }
+}
+
+document.getElementById("loginBtn").addEventListener("click", login);
+document.getElementById("refreshBtn").addEventListener("click", loadNews);
+document.getElementById("statusFilter").addEventListener("change", loadNews);
+
+document.getElementById("password").addEventListener("keydown", event => {
+  if (event.key === "Enter") login();
+});
+</script>
+</body>
+</html>
+
