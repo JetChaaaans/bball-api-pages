@@ -6,6 +6,17 @@ export async function onRequest(context) {
     "Access-Control-Allow-Headers": "Content-Type"
   };
 
+  function json(data, status = 200) {
+    return new Response(JSON.stringify(data, null, 2), {
+      status,
+      headers: {
+        ...cors,
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store"
+      }
+    });
+  }
+
   if (context.request.method === "OPTIONS") {
     return new Response(null, { headers: cors });
   }
@@ -14,7 +25,7 @@ export async function onRequest(context) {
     return json({
       success: false,
       message: "只支持 GET 请求"
-    }, 405, cors);
+    }, 405);
   }
 
   function cleanText(value = "") {
@@ -83,6 +94,89 @@ export async function onRequest(context) {
     }).filter(item => item.title);
   }
 
+  // 使用 AI 翻译标题和新闻摘要
+  async function translateNews(item) {
+    if (!context.env.AI) {
+      throw new Error("没有找到 AI 绑定");
+    }
+
+    const sourceText = JSON.stringify({
+      title: item.title.slice(0, 300),
+      description: item.content.slice(0, 700)
+    });
+
+    const result = await context.env.AI.run(
+      "@cf/zai-org/glm-4.7-flash",
+      {
+        messages: [
+          {
+            role: "system",
+            content: `你是一名专业的NBA中文新闻编辑。
+请将提供的英文NBA新闻标题和摘要翻译、整理为简体中文。
+要求：
+1. 准确保留球员姓名、球队名称、比赛数据和事实。
+2. title 是简洁自然的中文新闻标题。
+3. summary 是简短、流畅的中文新闻摘要，通常1至2句话。
+4. 只能依据提供的英文内容，不得编造事实。
+5. 如果没有提供摘要，只能根据标题进行简短转述。
+6. 不要展示分析过程。
+7. 必须只返回合法JSON，不要使用Markdown代码块。
+返回格式：
+{"title":"中文标题","summary":"中文摘要"}`
+          },
+          {
+            role: "user",
+            content: sourceText
+          }
+        ],
+        chat_template_kwargs: {
+          enable_thinking: false,
+          clear_thinking: true
+        },
+        max_completion_tokens: 300,
+        temperature: 0.2
+      }
+    );
+
+    const message = result?.choices?.[0]?.message;
+
+    const rawText =
+      message?.content ||
+      result?.response ||
+      result?.output_text ||
+      "";
+
+    if (typeof rawText !== "string" || !rawText.trim()) {
+      throw new Error("AI 没有返回翻译内容");
+    }
+
+    const cleaned = rawText
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+
+    let translated;
+
+    try {
+      translated = JSON.parse(cleaned);
+    } catch {
+      throw new Error("AI 返回内容不是有效JSON：" + cleaned.slice(0, 150));
+    }
+
+    if (
+      typeof translated.title !== "string" ||
+      !translated.title.trim() ||
+      typeof translated.summary !== "string"
+    ) {
+      throw new Error("AI 返回的中文标题或摘要格式不正确");
+    }
+
+    return {
+      title: translated.title.trim(),
+      summary: translated.summary.trim()
+    };
+  }
+
   const feeds = [
     {
       name: "ESPN",
@@ -146,19 +240,30 @@ export async function onRequest(context) {
     return timeB - timeA;
   });
 
-  // 将新闻保存到 D1 数据库
   let databaseSaved = 0;
+  let translatedCount = 0;
+  let alreadyTranslated = 0;
+  let translationPending = 0;
+  let translationFailed = 0;
   let databaseError = null;
+
+  // 每次最多翻译10条，避免单次请求过长
+  const translationLimit = 10;
 
   try {
     const db = context.env.DB;
 
     if (!db) {
-      throw new Error("没有找到 DB 数据库绑定，请检查 Cloudflare Bindings 设置");
+      throw new Error("没有找到 DB 数据库绑定");
     }
 
-    const statements = finalItems.map(item =>
-      db.prepare(`
+    let processed = 0;
+
+    for (const item of finalItems) {
+      const itemId = String(item.id);
+
+      // 先保存原文，确保翻译失败时新闻也不会丢失
+      const insertResult = await db.prepare(`
         INSERT OR IGNORE INTO playerbuzz_items (
           id,
           source,
@@ -171,55 +276,132 @@ export async function onRequest(context) {
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
       `).bind(
-        String(item.id),
+        itemId,
         item.source,
         item.sourceLink || "",
         item.title,
         item.content || "",
         item.category || "NBA新闻",
         item.publishedAt || ""
-      )
-    );
+      ).run();
 
-    if (statements.length > 0) {
-      const saveResults = await db.batch(statements);
+      databaseSaved += insertResult.meta?.changes || 0;
 
-      databaseSaved = saveResults.reduce(
-        (total, result) => total + (result.meta?.changes || 0),
-        0
-      );
+      // 查询数据库中已有的中文翻译
+      const existing = await db.prepare(`
+        SELECT chinese_title, chinese_content
+        FROM playerbuzz_items
+        WHERE id = ?
+      `).bind(itemId).first();
+
+      if (!existing) {
+        errors.push("数据库读取失败：" + item.title);
+        continue;
+      }
+
+      if (
+        existing.chinese_title &&
+        existing.chinese_content
+      ) {
+        alreadyTranslated++;
+        item.chineseTitle = existing.chinese_title;
+        item.chineseContent = existing.chinese_content;
+        item.translationStatus = "translated";
+        continue;
+      }
+
+      if (processed >= translationLimit) {
+        translationPending++;
+        item.translationStatus = "waiting";
+        continue;
+      }
+
+      processed++;
+
+      try {
+        const translated = await translateNews(item);
+
+        // 只补充空白翻译字段，不覆盖人工已经编辑的内容
+        await db.prepare(`
+          UPDATE playerbuzz_items
+          SET
+            chinese_title = CASE
+              WHEN chinese_title IS NULL OR chinese_title = ''
+              THEN ?
+              ELSE chinese_title
+            END,
+            chinese_content = CASE
+              WHEN chinese_content IS NULL OR chinese_content = ''
+              THEN ?
+              ELSE chinese_content
+            END,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).bind(
+          translated.title,
+          translated.summary,
+          itemId
+        ).run();
+
+        const savedTranslation = await db.prepare(`
+          SELECT chinese_title, chinese_content
+          FROM playerbuzz_items
+          WHERE id = ?
+        `).bind(itemId).first();
+
+        item.chineseTitle = savedTranslation?.chinese_title || translated.title;
+        item.chineseContent = savedTranslation?.chinese_content || translated.summary;
+        item.translationStatus = "translated";
+
+        translatedCount++;
+
+      } catch (error) {
+        translationFailed++;
+        translationPending++;
+
+        item.translationStatus = "failed";
+
+        errors.push(
+          "AI翻译失败：" + item.title + "：" +
+          (error.message || "未知错误")
+        );
+      }
     }
 
   } catch (error) {
     databaseError = error.message || "数据库保存失败";
-    errors.push("D1 数据库：" + databaseError);
+    errors.push("D1数据库：" + databaseError);
   }
 
   return json({
     success: finalItems.length > 0,
     service: "B-BALL Player Buzz",
     dataSource: feeds.map(feed => feed.name),
+
     successfulSources,
+
     total: finalItems.length,
-    pendingReview: finalItems.length,
+
     database: {
       connected: !databaseError,
       saved: databaseSaved,
-      skipped: finalItems.length - databaseSaved,
       error: databaseError
     },
-    errors,
-    items: finalItems
-  }, finalItems.length > 0 ? 200 : 502, cors);
-}
 
-function json(data, status, cors) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: {
-      ...cors,
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "public, max-age=300"
-    }
-  });
+    translation: {
+      model: "@cf/zai-org/glm-4.7-flash",
+      translated: translatedCount,
+      alreadyTranslated,
+      failed: translationFailed,
+      waiting: translationPending,
+      limitPerRequest: translationLimit
+    },
+
+    pendingReview: finalItems.length,
+
+    errors,
+
+    items: finalItems
+
+  }, finalItems.length > 0 ? 200 : 502);
 }
