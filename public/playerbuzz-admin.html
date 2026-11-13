@@ -1,13 +1,13 @@
 
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>B-BALL 球员八卦审核后台</title>
+<title>B-BALL Player Buzz Admin</title>
 <style>
 *{box-sizing:border-box}
-body{margin:0;background:#f3f6fa;color:#233247;font-family:Arial,"Microsoft YaHei",sans-serif}
+body{margin:0;background:#f3f6fa;color:#233247;font-family:Arial,sans-serif}
 header{background:#172b43;color:white;padding:24px 5%;display:flex;justify-content:space-between;align-items:center}
 header h1{font-size:21px;margin:0}
 header span{font-size:12px;color:#b8c7d8}
@@ -27,7 +27,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .toolbar select{width:auto;min-width:150px}
 .status{font-size:13px;color:#7d8b9c;margin-top:12px;line-height:1.7}
-.news-card h3{font-size:17px;margin:0 0 10px;line-height:1.5}
+.news-card h3{font-size:17px;margin:0 0 10px;line-height:1.5;overflow-wrap:anywhere}
 .meta{font-size:12px;color:#8492a3;margin-bottom:14px;line-height:1.8;overflow-wrap:anywhere}
 .field{margin-top:13px}
 .field label{display:block;font-size:13px;font-weight:bold;margin-bottom:7px;color:#53657a}
@@ -53,32 +53,32 @@ header h1{font-size:17px}
 </head>
 <body>
 <header>
-  <h1>🏀 B-BALL 球员八卦审核后台</h1>
+  <h1>🏀 B-BALL Player Buzz Admin</h1>
   <span>PLAYER BUZZ ADMIN</span>
 </header>
 
 <main>
   <section class="panel">
-    <h2 style="font-size:17px;margin-top:0">管理员登录</h2>
+    <h2 style="font-size:17px;margin-top:0">Administrator Login</h2>
     <div class="login-row">
-      <input id="password" type="password" placeholder="请输入管理员密码">
-      <button class="primary" id="loginBtn">登录并读取新闻</button>
+      <input id="password" type="password" placeholder="Enter administrator password">
+      <button class="primary" id="loginBtn">Login & Load News</button>
     </div>
-    <div class="status" id="message">请输入管理员密码后登录。</div>
+    <div class="status" id="message">Please enter your administrator password.</div>
   </section>
 
   <section class="panel" id="workspace" hidden>
     <div class="toolbar">
-      <strong>新闻审核列表</strong>
+      <strong>News Review List</strong>
       <div style="display:flex;gap:8px;align-items:center">
         <select id="statusFilter">
-          <option value="featured">⭐ AI每日精选</option>
-          <option value="pending">普通待审核</option>
-          <option value="approved">已通过</option>
-          <option value="rejected">已拒绝</option>
-          <option value="all">全部新闻</option>
+          <option value="featured">⭐ AI Daily Picks</option>
+          <option value="pending">Pending Review</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+          <option value="all">All News</option>
         </select>
-        <button class="primary" id="refreshBtn">刷新</button>
+        <button class="primary" id="refreshBtn">Refresh</button>
       </div>
     </div>
 
@@ -88,12 +88,12 @@ header h1{font-size:17px}
       <div class="batch-left">
         <label class="check-row">
           <input type="checkbox" id="selectAll">
-          选择当前页面
+          Select Current Page
         </label>
-        <span id="selectedCount">已选择0条</span>
-        <span>每次最多20条</span>
+        <span id="selectedCount">0 selected</span>
+        <span>Maximum 20 items per batch</span>
       </div>
-      <button class="batch" id="batchApproveBtn">一键审核通过所选新闻</button>
+      <button class="batch" id="batchApproveBtn">Approve Selected News</button>
     </div>
   </section>
 
@@ -151,7 +151,7 @@ async function apiRequest(method, body = null, status = "featured") {
   const data = await response.json();
 
   if (!response.ok || !data.success) {
-    throw new Error(data.message || "请求失败");
+    throw new Error(data.message || "Request failed");
   }
 
   return data;
@@ -161,21 +161,21 @@ async function login() {
   adminPassword = document.getElementById("password").value.trim();
 
   if (!adminPassword) {
-    setMessage("请先输入管理员密码。");
+    setMessage("Please enter your administrator password.");
     return;
   }
 
   document.getElementById("loginBtn").disabled = true;
-  setMessage("正在验证密码……");
+  setMessage("Verifying password...");
 
   try {
     await loadNews();
     workspace.hidden = false;
     document.getElementById("password").value = "";
-    setMessage("登录成功。关闭浏览器页面后需要重新登录。");
+    setMessage("Login successful. You will need to log in again after closing this page.");
   } catch (error) {
     adminPassword = "";
-    setMessage("登录失败：" + error.message);
+    setMessage("Login failed: " + error.message);
   } finally {
     document.getElementById("loginBtn").disabled = false;
   }
@@ -186,7 +186,7 @@ function updateSelection() {
   const count = checked.length;
 
   document.getElementById("selectedCount").textContent =
-    "已选择" + count + "条";
+    count + " selected";
 
   document.getElementById("selectAll").checked =
     currentItems.length > 0 &&
@@ -204,72 +204,89 @@ function updateSelection() {
 
   if (count > 20) {
     document.getElementById("selectedCount").textContent =
-      "已选择" + count + "条，请减少到20条以内";
+      count + " selected. Please select no more than 20.";
   }
+}
+
+function getCategoryOptions(selectedCategory) {
+  const categories = [
+    ["NBA新闻", "NBA News"],
+    ["球员动态", "Player Updates"],
+    ["场外生活", "Off-Court Lifestyle"],
+    ["社交动态", "Social Media"],
+    ["趣闻八卦", "Player Buzz"]
+  ];
+
+  return categories.map(([value, label]) =>
+    `<option value="${value}" ${selectedCategory === value ? "selected" : ""}>${label}</option>`
+  ).join("");
 }
 
 function renderNews(items) {
   currentItems = items || [];
 
   if (!items || items.length === 0) {
-    newsList.innerHTML = '<div class="panel empty">当前没有符合条件的新闻。</div>';
+    newsList.innerHTML = '<div class="panel empty">No news found for this category.</div>';
     updateSelection();
     return;
   }
 
-  newsList.innerHTML = items.map(item => `
+  newsList.innerHTML = items.map(item => {
+    const englishTitle = item.original_title || item.chinese_title || "";
+    const englishContent = item.original_content || item.chinese_content || "";
+
+    return `
     <article class="news-card" data-id="${escapeHtml(item.id)}">
       <div class="card-top">
         <div>
           ${item.ai_selected == 1
-            ? `<div class="featured-tag">⭐ AI每日精选 · ${escapeHtml(item.selection_date || "")}</div>`
+            ? `<div class="featured-tag">⭐ AI Daily Pick · ${escapeHtml(item.selection_date || "")}</div>`
             : ""}
-          <h3>${escapeHtml(item.original_title)}</h3>
+          <h3>${escapeHtml(englishTitle)}</h3>
           <div class="meta">
-            来源：<span class="source">${escapeHtml(item.source)}</span>
-            · 发布时间：${escapeHtml(item.published_at || "未知")}
-            · 状态：${escapeHtml(item.review_status)}
+            Source: <span class="source">${escapeHtml(item.source || "Unknown")}</span>
+            · Published: ${escapeHtml(item.published_at || "Unknown")}
+            · Status: ${escapeHtml(item.review_status || "Unknown")}
           </div>
         </div>
         ${item.review_status === "pending"
-          ? `<input class="card-check item-check" type="checkbox" data-id="${escapeHtml(item.id)}" aria-label="选择这条新闻">`
+          ? `<input class="card-check item-check" type="checkbox" data-id="${escapeHtml(item.id)}" aria-label="Select this news item">`
           : ""}
       </div>
 
       <div class="field">
-        <label>中文标题</label>
-        <input class="chinese-title" value="${escapeHtml(item.chinese_title || item.original_title)}">
+        <label>English Title (Original)</label>
+        <input class="chinese-title" value="${escapeHtml(englishTitle)}">
       </div>
 
       <div class="field">
-        <label>中文摘要（请自行整理，不要直接复制整篇新闻）</label>
-        <textarea class="chinese-content">${escapeHtml(item.chinese_content || item.original_content || "")}</textarea>
+        <label>English Summary (Brief summary in your own words; do not copy the full article)</label>
+        <textarea class="chinese-content">${escapeHtml(englishContent)}</textarea>
       </div>
 
       <div class="field">
-        <label>球员名称（可留空，建议保留英文原名）</label>
-        <input class="player-name" value="${escapeHtml(item.player_name || "")}" placeholder="例如：LeBron James">
+        <label>Player Name (Optional; keep the original English name)</label>
+        <input class="player-name" value="${escapeHtml(item.player_name || "")}" placeholder="Example: LeBron James">
       </div>
 
       <div class="field">
-        <label>新闻分类</label>
+        <label>News Category</label>
         <select class="category">
-          ${["NBA新闻","球员动态","场外生活","社交动态","趣闻八卦"].map(category =>
-            `<option value="${category}" ${item.category === category ? "selected" : ""}>${category}</option>`
-          ).join("")}
+          ${getCategoryOptions(item.category)}
         </select>
       </div>
 
       <div class="meta" style="margin-top:12px">
-        原文来源：${escapeHtml(item.source_link || "未提供")}
+        Original Source: ${escapeHtml(item.source_link || "Not provided")}
       </div>
 
       <div class="actions">
-        <button class="approve" data-action="approve">审核通过</button>
-        <button class="reject" data-action="reject">拒绝</button>
+        <button class="approve" data-action="approve">Approve</button>
+        <button class="reject" data-action="reject">Reject</button>
       </div>
     </article>
-  `).join("");
+  `;
+  }).join("");
 
   newsList.querySelectorAll("button[data-action]").forEach(button => {
     button.addEventListener("click", () => reviewItem(button));
@@ -285,8 +302,8 @@ function renderNews(items) {
 async function loadNews() {
   const status = statusFilter.value;
 
-  setMessage("正在读取新闻……");
-  newsList.innerHTML = '<div class="panel empty">正在加载……</div>';
+  setMessage("Loading news...");
+  newsList.innerHTML = '<div class="panel empty">Loading...</div>';
 
   batchApproveBtn.disabled = true;
   document.getElementById("selectAll").checked = false;
@@ -295,15 +312,15 @@ async function loadNews() {
     const data = await apiRequest("GET", null, status);
 
     document.getElementById("count").textContent =
-      "当前显示 " + data.total + " 条新闻" +
-      (status === "featured" ? " · 日期：" + data.date : "");
+      "Showing " + data.total + " news items" +
+      (status === "featured" ? " · Date: " + data.date : "");
 
     batchPanel.hidden = !canBatchApprove();
     renderNews(data.items);
-    setMessage("新闻读取成功。");
+    setMessage("News loaded successfully.");
   } catch (error) {
     newsList.innerHTML = "";
-    setMessage("读取失败：" + error.message);
+    setMessage("Failed to load news: " + error.message);
     throw error;
   }
 }
@@ -324,12 +341,12 @@ async function reviewItem(button) {
     body.category = card.querySelector(".category").value;
 
     if (!body.chinese_title || !body.chinese_content) {
-      alert("请填写中文标题和中文摘要后再审核通过。");
+      alert("Please enter the English title and English summary before approving.");
       return;
     }
   }
 
-  if (action === "reject" && !confirm("确定拒绝这条新闻吗？")) {
+  if (action === "reject" && !confirm("Are you sure you want to reject this news item?")) {
     return;
   }
 
@@ -340,7 +357,7 @@ async function reviewItem(button) {
     alert(result.message);
     await loadNews();
   } catch (error) {
-    alert("操作失败：" + error.message);
+    alert("Operation failed: " + error.message);
     card.querySelectorAll("button").forEach(item => item.disabled = false);
   }
 }
@@ -359,7 +376,7 @@ function selectCurrentPage() {
 
 async function batchApprove() {
   if (!canBatchApprove()) {
-    alert("请先切换到 AI每日精选或普通待审核列表。");
+    alert("Please switch to AI Daily Picks or Pending Review first.");
     return;
   }
 
@@ -368,12 +385,12 @@ async function batchApprove() {
   );
 
   if (selectedCards.length === 0) {
-    alert("请先勾选需要审核的新闻。");
+    alert("Please select the news items you want to approve.");
     return;
   }
 
   if (selectedCards.length > 20) {
-    alert("每次最多审核20条，请减少选择数量。");
+    alert("You can approve a maximum of 20 items at a time.");
     return;
   }
 
@@ -391,7 +408,7 @@ async function batchApprove() {
     };
 
     if (!item.chinese_title || !item.chinese_content) {
-      alert("有新闻缺少中文标题或摘要，请补充后再审核。");
+      alert("Some selected news items are missing an English title or summary.");
       return;
     }
 
@@ -399,14 +416,14 @@ async function batchApprove() {
   }
 
   const confirmed = confirm(
-    "确定一次性审核通过选中的 " + items.length +
-    " 条新闻吗？\n\n只有这些勾选的待审核新闻会被批准。"
+    "Approve the selected " + items.length +
+    " news items?\n\nOnly the selected pending news items will be approved."
   );
 
   if (!confirmed) return;
 
   batchApproveBtn.disabled = true;
-  setMessage("正在批量审核，请不要关闭页面……");
+  setMessage("Approving selected news. Please do not close this page...");
 
   try {
     const result = await apiRequest("POST", {
@@ -415,15 +432,15 @@ async function batchApprove() {
     });
 
     alert(
-      "批量审核完成！\n\n成功通过：" + result.approved +
-      "条\n跳过：" + result.skipped + "条"
+      "Batch review completed!\n\nApproved: " + result.approved +
+      "\nSkipped: " + result.skipped
     );
 
     await loadNews();
   } catch (error) {
-    alert("批量审核失败：" + error.message);
+    alert("Batch approval failed: " + error.message);
     batchApproveBtn.disabled = false;
-    setMessage("批量审核失败：" + error.message);
+    setMessage("Batch approval failed: " + error.message);
   }
 }
 
