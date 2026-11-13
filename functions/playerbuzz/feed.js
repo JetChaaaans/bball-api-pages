@@ -38,12 +38,16 @@ export async function onRequest(context) {
 
   function getTag(xml, tag) {
     const match = xml.match(
-      new RegExp("<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)</" + tag + ">", "i")
+      new RegExp(
+        "<" + tag + "(?:\\s[^>]*)?>([\\s\\S]*?)</" + tag + ">",
+        "i"
+      )
     );
 
     return match ? cleanText(match[1]) : "";
   }
 
+  // ESPN NBA 新闻
   async function getEspnNews() {
     const url = "https://www.espn.com/espn/rss/nba/news";
 
@@ -73,47 +77,75 @@ export async function onRequest(context) {
     })).filter(item => item.title);
   }
 
-  // 改用 api.bsky.app 测试免费公开搜索接口
-  async function getBlueskyPosts() {
-    const url = new URL(
-      "https://api.bsky.app/xrpc/app.bsky.feed.searchPosts"
-    );
+  // Google News RSS：球员场外动态相关新闻
+  async function getGoogleNews() {
+    const queries = [
+      '"NBA player" social media OR Instagram OR TikTok when:7d',
+      'NBA players off court viral post when:7d',
+      'NBA star interview personal life social media when:7d'
+    ];
 
-    url.searchParams.set("q", "NBA");
-    url.searchParams.set("sort", "latest");
-    url.searchParams.set("limit", "30");
+    const allItems = [];
 
-    const response = await fetch(url.toString(), {
-      headers: {
-        "Accept": "application/json",
-        "User-Agent": "B-BALL-News-Reader/1.0"
+    for (const query of queries) {
+      const url = new URL(
+        "https://news.google.com/rss/search"
+      );
+
+      url.searchParams.set("q", query);
+      url.searchParams.set("hl", "en-US");
+      url.searchParams.set("gl", "US");
+      url.searchParams.set("ceid", "US:en");
+
+      const response = await fetch(url.toString(), {
+        headers: {
+          "User-Agent": "Mozilla/5.0 B-BALL-News-Reader/1.0",
+          "Accept": "application/rss+xml, application/xml, text/xml"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error("Google News RSS 请求失败：" + response.status);
       }
-    });
 
-    if (!response.ok) {
-      throw new Error("Bluesky 请求失败：" + response.status);
+      const xml = await response.text();
+      const entries = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) || [];
+
+      const items = entries.map(item => ({
+        id: getTag(item, "guid") || getTag(item, "link"),
+        type: "news",
+        category: "球员动态相关新闻",
+        title: getTag(item, "title"),
+        content: getTag(item, "description"),
+        source: getTag(item, "source") || "Google News",
+        sourceLink: getTag(item, "link"),
+        publishedAt: getTag(item, "pubDate"),
+        reviewStatus: "pending"
+      })).filter(item => item.title);
+
+      allItems.push(...items);
     }
 
-    const data = await response.json();
+    // 按链接去重
+    const uniqueItems = [];
+    const seen = new Set();
 
-    return (data.posts || []).map(post => ({
-      id: post.uri,
-      type: "social",
-      category: "社交平台动态",
-      title: post.author?.displayName ||
-        post.author?.handle || "未知用户",
-      content: post.record?.text || "",
-      author: post.author?.handle || "",
-      source: "Bluesky",
-      sourceLink: "",
-      publishedAt: post.record?.createdAt || post.indexedAt || "",
-      reviewStatus: "pending"
-    })).filter(item => item.content);
+    for (const item of allItems) {
+      const key = item.id || item.title;
+
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueItems.push(item);
+      }
+    }
+
+    return uniqueItems.slice(0, 30);
   }
 
+  // 两个新闻来源分别采集
   const results = await Promise.allSettled([
     getEspnNews(),
-    getBlueskyPosts()
+    getGoogleNews()
   ]);
 
   const items = [];
@@ -128,18 +160,31 @@ export async function onRequest(context) {
   if (results[1].status === "fulfilled") {
     items.push(...results[1].value);
   } else {
-    errors.push("Bluesky：" + results[1].reason.message);
+    errors.push("Google News：" + results[1].reason.message);
+  }
+
+  // 全部数据去重
+  const finalItems = [];
+  const finalSeen = new Set();
+
+  for (const item of items) {
+    const key = item.id || item.title;
+
+    if (!finalSeen.has(key)) {
+      finalSeen.add(key);
+      finalItems.push(item);
+    }
   }
 
   return json({
-    success: items.length > 0,
+    success: finalItems.length > 0,
     service: "B-BALL Player Buzz",
-    dataSource: ["ESPN RSS", "Bluesky Public API"],
-    total: items.length,
-    pendingReview: items.length,
+    dataSource: ["ESPN RSS", "Google News RSS"],
+    total: finalItems.length,
+    pendingReview: finalItems.length,
     errors,
-    items
-  }, items.length > 0 ? 200 : 502, cors);
+    items: finalItems
+  }, finalItems.length > 0 ? 200 : 502, cors);
 }
 
 function json(data, status, cors) {
