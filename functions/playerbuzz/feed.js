@@ -95,16 +95,9 @@ export async function onRequest(context) {
     }
   }
 
-  // 判断链接是否为RotoWire球员资料页，而不是具体新闻文章。
-  function isPlayerProfileUrl(value) {
-    if (!value) return false;
-
-    try {
-      const parsed = new URL(value);
-      return /\/basketball\/player\//i.test(parsed.pathname);
-    } catch {
-      return /\/basketball\/player\//i.test(String(value));
-    }
+  // 判断是否为RotoWire新闻源。
+  function isRotoWireSource(value) {
+    return String(value || "").trim().toLowerCase() === "rotowire";
   }
 
   // 新闻标题标准化。
@@ -178,27 +171,24 @@ export async function onRequest(context) {
   function isDuplicateNews(item, previousItems) {
     const currentUrl = normalizeUrl(item.sourceLink);
     const currentTitle = normalizeTitle(item.title);
-
-    // 当前新闻链接是否为球员资料页。
-    const currentIsProfile = isPlayerProfileUrl(item.sourceLink);
+    const currentIsRotoWire = isRotoWireSource(item.source);
 
     for (const previous of previousItems) {
       const previousRawUrl =
         previous.source_link || previous.sourceLink || "";
 
       const previousUrl = normalizeUrl(previousRawUrl);
+      const previousIsRotoWire = isRotoWireSource(previous.source);
 
-      // 已有新闻链接是否为球员资料页。
-      const previousIsProfile = isPlayerProfileUrl(previousRawUrl);
-
-      // 只有双方都不是球员资料页时，
-      // 才允许通过相同链接直接判定重复。
+      // ESPN和Yahoo继续使用链接判重。
+      // 只要当前新闻或历史新闻来自RotoWire，
+      // 就跳过URL判重，避免球员资料页造成误删。
       if (
+        !currentIsRotoWire &&
+        !previousIsRotoWire &&
         currentUrl &&
         previousUrl &&
-        currentUrl === previousUrl &&
-        !currentIsProfile &&
-        !previousIsProfile
+        currentUrl === previousUrl
       ) {
         return {
           duplicate: true,
@@ -561,6 +551,7 @@ Return valid JSON only:
     const existingResult = await db.prepare(`
       SELECT
         id,
+        source,
         source_link,
         original_title,
         published_at,
