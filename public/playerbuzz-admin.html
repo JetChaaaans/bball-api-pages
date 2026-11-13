@@ -25,7 +25,7 @@ button{border:0;border-radius:8px;padding:11px 18px;cursor:pointer;font-size:14p
 .secondary{background:#eaf0f6;color:#41556b}
 button:disabled{opacity:.5;cursor:not-allowed}
 .toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.toolbar select{width:auto;min-width:130px}
+.toolbar select{width:auto;min-width:150px}
 .status{font-size:13px;color:#7d8b9c;margin-top:12px;line-height:1.7}
 .news-card h3{font-size:17px;margin:0 0 10px;line-height:1.5}
 .meta{font-size:12px;color:#8492a3;margin-bottom:14px;line-height:1.8;overflow-wrap:anywhere}
@@ -40,6 +40,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .check-row input{width:18px;height:18px}
 .card-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
 .card-check{width:20px;height:20px;flex-shrink:0}
+.featured-tag{display:inline-block;background:#fff1df;color:#b96a13;padding:4px 9px;border-radius:6px;font-size:12px;margin-bottom:8px}
 @media(max-width:600px){
 header{padding:18px}
 header h1{font-size:17px}
@@ -71,7 +72,8 @@ header h1{font-size:17px}
       <strong>新闻审核列表</strong>
       <div style="display:flex;gap:8px;align-items:center">
         <select id="statusFilter">
-          <option value="pending">待审核</option>
+          <option value="featured">⭐ AI每日精选</option>
+          <option value="pending">普通待审核</option>
           <option value="approved">已通过</option>
           <option value="rejected">已拒绝</option>
           <option value="all">全部新闻</option>
@@ -108,6 +110,7 @@ const workspace = document.getElementById("workspace");
 const newsList = document.getElementById("newsList");
 const batchPanel = document.getElementById("batchPanel");
 const batchApproveBtn = document.getElementById("batchApproveBtn");
+const statusFilter = document.getElementById("statusFilter");
 
 function setMessage(text) {
   message.textContent = text;
@@ -123,7 +126,11 @@ function escapeHtml(value) {
   }[char]));
 }
 
-async function apiRequest(method, body = null, status = "pending") {
+function canBatchApprove() {
+  return ["pending", "featured"].includes(statusFilter.value);
+}
+
+async function apiRequest(method, body = null, status = "featured") {
   const options = {
     method,
     headers: {
@@ -191,7 +198,7 @@ function updateSelection() {
     });
 
   batchApproveBtn.disabled =
-    document.getElementById("statusFilter").value !== "pending" ||
+    !canBatchApprove() ||
     count === 0 ||
     count > 20;
 
@@ -214,6 +221,9 @@ function renderNews(items) {
     <article class="news-card" data-id="${escapeHtml(item.id)}">
       <div class="card-top">
         <div>
+          ${item.ai_selected == 1
+            ? `<div class="featured-tag">⭐ AI每日精选 · ${escapeHtml(item.selection_date || "")}</div>`
+            : ""}
           <h3>${escapeHtml(item.original_title)}</h3>
           <div class="meta">
             来源：<span class="source">${escapeHtml(item.source)}</span>
@@ -237,7 +247,7 @@ function renderNews(items) {
       </div>
 
       <div class="field">
-        <label>球员名称（可留空）</label>
+        <label>球员名称（可留空，建议保留英文原名）</label>
         <input class="player-name" value="${escapeHtml(item.player_name || "")}" placeholder="例如：LeBron James">
       </div>
 
@@ -273,7 +283,7 @@ function renderNews(items) {
 }
 
 async function loadNews() {
-  const status = document.getElementById("statusFilter").value;
+  const status = statusFilter.value;
 
   setMessage("正在读取新闻……");
   newsList.innerHTML = '<div class="panel empty">正在加载……</div>';
@@ -285,9 +295,10 @@ async function loadNews() {
     const data = await apiRequest("GET", null, status);
 
     document.getElementById("count").textContent =
-      "当前显示 " + data.total + " 条新闻";
+      "当前显示 " + data.total + " 条新闻" +
+      (status === "featured" ? " · 日期：" + data.date : "");
 
-    batchPanel.hidden = status !== "pending";
+    batchPanel.hidden = !canBatchApprove();
     renderNews(data.items);
     setMessage("新闻读取成功。");
   } catch (error) {
@@ -347,8 +358,8 @@ function selectCurrentPage() {
 }
 
 async function batchApprove() {
-  if (document.getElementById("statusFilter").value !== "pending") {
-    alert("请先切换到待审核列表。");
+  if (!canBatchApprove()) {
+    alert("请先切换到 AI每日精选或普通待审核列表。");
     return;
   }
 
@@ -418,7 +429,7 @@ async function batchApprove() {
 
 document.getElementById("loginBtn").addEventListener("click", login);
 document.getElementById("refreshBtn").addEventListener("click", loadNews);
-document.getElementById("statusFilter").addEventListener("change", loadNews);
+statusFilter.addEventListener("change", loadNews);
 document.getElementById("selectAll").addEventListener("change", selectCurrentPage);
 batchApproveBtn.addEventListener("click", batchApprove);
 
